@@ -1,0 +1,9 @@
+[project]
+name = "rightboard"
+version = "0.1.0"
+description = "Python helper scripts"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyserial>=3.5",
+]
