@@ -4,41 +4,24 @@
 extern crate panic_halt;
 
 pub mod keyscan;
-use keyscan::Keyscan;
+
+use core::fmt::Write;
+
+use heapless::String;
+use keyscan::{key_scan, SCAN, Keyscan};
 
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
 use embassy_stm32::usart::{RingBufferedUartRx, Uart};
 use embassy_stm32::{bind_interrupts, peripherals, usart, Config};
-use embassy_time::{block_for, Duration, Timer};
+use embassy_time::{Instant, Timer};
 use embedded_io::ReadReady;
 use static_cell::StaticCell;
 
 bind_interrupts!(struct Irqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
 });
-
-// Column x Row
-type KeyBits = [u8; 8];
-
-#[embassy_executor::task]
-async fn key_scan(keys: &'static mut Keyscan<'static>, led: &'static mut Output<'static>) {
-    loop {
-        let mut bits: u8 = 0;
-        Timer::after_millis(5).await;
-        for i in 0..8 {
-            keys.set(i);
-            block_for(Duration::from_micros(1));
-            bits |= keys.read_inputs();
-        }
-        if bits > 0 {
-            led.set_high();
-        } else {
-            led.set_low();
-        }
-    }
-}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
@@ -72,7 +55,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let keys = Keyscan::new(
         key_select_pins,
-        Output::new(p.PA4, Level::Low, Speed::High),
+        Output::new(p.PA4, Level::High, Speed::High),
         key_inputs,
     );
 
@@ -119,6 +102,11 @@ async fn main(spawner: Spawner) -> ! {
         if uart_rx.read_ready().unwrap() {
             uart_rx.read(&mut buffer).await.unwrap();
             uart_tx.write(&buffer).await.unwrap();
+        }
+        if let Some(scan) = SCAN.try_take() {
+            let mut msg: String<30> = String::new();
+            core::write!(&mut msg, "{:03}: 0x{:02X}\r\n", scan.scan_time, scan.state[0]).unwrap();
+            uart_tx.write(msg.as_bytes()).await.unwrap();
         }
     }
 }
