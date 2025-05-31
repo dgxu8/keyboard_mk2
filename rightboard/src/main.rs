@@ -4,19 +4,18 @@
 extern crate panic_halt;
 
 pub mod keyscan;
+pub mod serial;
 
-use core::fmt::Write;
-
-use heapless::String;
+use serial::Cobs;
 use keyscan::{key_scan, SCAN, Keyscan};
 
+use heapless::Vec;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
 use embassy_stm32::usart::{RingBufferedUartRx, Uart};
 use embassy_stm32::{bind_interrupts, peripherals, usart, Config};
 use embassy_time::{Instant, Timer};
-use embedded_io::ReadReady;
 use static_cell::StaticCell;
 
 bind_interrupts!(struct Irqs {
@@ -68,16 +67,16 @@ async fn main(spawner: Spawner) -> ! {
     // data_bits: DataBits::DataBits8,
     // stop_bits: StopBits::STOP1,
     // parity: Parity::ParityNone,
+    let mut uart_cfg = usart::Config::default();
+    uart_cfg.baudrate = 2_000_000;
     let uart = Uart::new(
         p.USART2,
         p.PA3, p.PA2,  // RX, TX
         Irqs,
         p.DMA1_CH4, p.DMA1_CH5,  // TX, RX
-        usart::Config::default()
+        uart_cfg,
     ).unwrap();
     let (mut uart_tx, uart_rx) = uart.split();
-
-    uart_tx.write(b"Test\r\n").await.unwrap();
     led0.set_high();
 
     // Keys and led1 are moved into keys_scan's context forever. If we need shared access we need
@@ -96,17 +95,20 @@ async fn main(spawner: Spawner) -> ! {
     // let rx_buf: &mut [u8; RX_BUF_SIZE] = singleton!(: [u8; RX_BUF_SIZE] = [0; RX_BUF_SIZE]).unwrap();
     // let uart_rx = uart_rx.into_ring_buffered(rx_buf);
     uart_rx.start_uart();
+
+    let mut elasped: u64 = 0;
+    let mut start: Instant;
     loop {
         Timer::after_millis(5).await;
-        let mut buffer: [u8; 1] = [0; 1];
-        if uart_rx.read_ready().unwrap() {
-            uart_rx.read(&mut buffer).await.unwrap();
-            uart_tx.write(&buffer).await.unwrap();
-        }
         if let Some(scan) = SCAN.try_take() {
-            let mut msg: String<30> = String::new();
-            core::write!(&mut msg, "{:03}: 0x{:02X}\r\n", scan.scan_time, scan.state[0]).unwrap();
-            uart_tx.write(msg.as_bytes()).await.unwrap();
+            let mut data: Vec<u8, 32> = Vec::new();
+
+            data.extend_from_slice(&scan.scan_time.to_le_bytes()).unwrap();
+            data.extend_from_slice(&elasped.to_le_bytes()).unwrap();
+
+            start = Instant::now();
+            uart_tx.write_cobs(data.as_slice()).await.unwrap();
+            elasped = (Instant::now() - start).as_micros();
         }
     }
 }

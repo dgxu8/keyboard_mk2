@@ -72,3 +72,33 @@ def cobs_self_test():
 
     unpacked, data = cobs_decode(bytearray(packed) + b"\x04")
     print(f"{unpacked.hex()} - {data}")
+
+
+def rb_encode_test(ser):
+    while True:
+        packet = bytearray()
+        while (recv := ser.read()) != b"\x00":
+            packet += recv
+        if len(packet) == 0:
+            continue
+        packet += b"\x00"
+        print(packet)
+        data, _ = cobs_decode(packet)
+        scan_time, cobs_time = struct.unpack("<QQ", data)
+        print(f"{scan_time}us, COBS: {cobs_time}us")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="Serial tester")
+    parser.add_argument("serial", type=str, help="Serial port of device")
+    args = parser.parse_args()
+
+    try:
+        with serial.Serial(args.serial, 2_000_000, timeout=0.1) as ser:
+            rb_encode_test(ser)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

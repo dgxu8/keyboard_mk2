@@ -19,6 +19,7 @@ heapless = { version = "0.8", default-features = false }
 embedded-hal = "1.0.0"
 static_cell = { version = "2" }
 portable-atomic = { version = "1", features = ["unsafe-assume-single-core"] }
+trait-variant = "0.1.2"
 
 [[bin]]
 name = "rightboard"
