@@ -88,6 +88,24 @@ def rb_encode_test(ser):
         print(f"{scan_time}us, COBS: {cobs_time}us")
 
 
+def rb_decode_test(ser):
+    elapsed = 0
+    while True:
+        data = struct.pack("<Q", int(elapsed))
+
+        start = time.monotonic()
+        packet = cobs_encode(data)
+        ser.write(packet)
+        elapsed = (time.monotonic() - start) * 1_000_000
+
+        msg = bytearray()
+        while len(recv := ser.read()) > 0:
+            msg += recv
+        if len(msg) > 0:
+            print(msg.decode("Latin-1"))
+        time.sleep(0.5)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="Serial tester")
     parser.add_argument("serial", type=str, help="Serial port of device")
@@ -95,7 +113,7 @@ def main():
 
     try:
         with serial.Serial(args.serial, 2_000_000, timeout=0.1) as ser:
-            rb_encode_test(ser)
+            rb_decode_test(ser)
     except KeyboardInterrupt:
         pass
 

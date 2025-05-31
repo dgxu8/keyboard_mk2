@@ -6,10 +6,13 @@ extern crate panic_halt;
 pub mod keyscan;
 pub mod serial;
 
-use serial::Cobs;
+use core::fmt::Write;
+
+use embedded_io::ReadReady;
+use serial::{CobsRx, CobsTx, SerialBuffer};
 use keyscan::{key_scan, SCAN, Keyscan};
 
-use heapless::Vec;
+use heapless::{String, Vec};
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
@@ -99,9 +102,9 @@ async fn main(spawner: Spawner) -> ! {
     let mut elasped: u64 = 0;
     let mut start: Instant;
     loop {
-        Timer::after_millis(5).await;
+        Timer::after_millis(1).await;
         if let Some(scan) = SCAN.try_take() {
-            let mut data: Vec<u8, 32> = Vec::new();
+            let mut data: SerialBuffer = Vec::new();
 
             data.extend_from_slice(&scan.scan_time.to_le_bytes()).unwrap();
             data.extend_from_slice(&elasped.to_le_bytes()).unwrap();
@@ -109,6 +112,17 @@ async fn main(spawner: Spawner) -> ! {
             start = Instant::now();
             uart_tx.write_cobs(data.as_slice()).await.unwrap();
             elasped = (Instant::now() - start).as_micros();
+        }
+        if uart_rx.read_ready().unwrap() {
+            let mut msg: SerialBuffer = Vec::new();
+            start = Instant::now();
+            uart_rx.read_cobs(&mut msg).await.unwrap();
+            elasped = (Instant::now() - start).as_micros();
+            let data: u64 = u64::from_le_bytes(msg[..].try_into().unwrap());
+
+            let mut str: String<30> = String::new();
+            core::write!(&mut str, ">> {} - {}", data, elasped).unwrap();
+            uart_tx.write(str.as_bytes()).await.unwrap();
         }
     }
 }
