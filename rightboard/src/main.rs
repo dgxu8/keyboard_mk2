@@ -4,11 +4,14 @@
 extern crate panic_halt;
 
 pub mod keyscan;
+pub mod rotary;
 pub mod serial;
 
 use core::fmt::Write;
 
+use embassy_stm32::exti::ExtiInput;
 use embedded_io::ReadReady;
+use rotary::{encoder_monitor, ENCODER_STATE};
 use serial::{CobsRx, CobsTx, SerialBuffer};
 use keyscan::{key_scan, SCAN, Keyscan};
 
@@ -90,6 +93,11 @@ async fn main(spawner: Spawner) -> ! {
     let led1 = LEDS.init(led1);
     spawner.spawn(key_scan(keys, led1)).unwrap();
 
+    // Rotary Encoder
+    let rot_pin_a = ExtiInput::new(p.PB14, p.EXTI14, Pull::None);
+    let rot_pin_b = ExtiInput::new(p.PB13, p.EXTI13, Pull::None);
+    spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a)).unwrap();
+
     const RX_BUF_SIZE: usize = 16;
     let mut rx_buf: [u8; RX_BUF_SIZE] = [0; RX_BUF_SIZE];
     let mut uart_rx: RingBufferedUartRx = uart_rx.into_ring_buffered(&mut rx_buf);
@@ -122,6 +130,11 @@ async fn main(spawner: Spawner) -> ! {
 
             let mut str: String<30> = String::new();
             core::write!(&mut str, ">> {} - {}", data, elasped).unwrap();
+            uart_tx.write(str.as_bytes()).await.unwrap();
+        }
+        if let Some(rotary) = ENCODER_STATE.try_take() {
+            let mut str: String<16> = String::new();
+            core::write!(&mut str, "{} - {}\r\n", rotary.pos, rotary.interrupts).unwrap();
             uart_tx.write(str.as_bytes()).await.unwrap();
         }
     }

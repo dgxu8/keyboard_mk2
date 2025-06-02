@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import serial
 import struct
+import subprocess
 import time
 
 from dataclasses import dataclass
@@ -104,6 +105,26 @@ def rb_decode_test(ser):
         if len(msg) > 0:
             print(msg.decode("Latin-1"))
         time.sleep(0.5)
+
+
+def encoder(ser):
+    data = []
+    try:
+        while True:
+            recv: bytes = ser.read()
+            if len(recv) == 0:
+                continue
+            data.append(int.from_bytes(recv, "little"))
+    except KeyboardInterrupt:
+        pass
+    with open("sample.csv", "w") as fd:
+        fd.write(f"a,b\n")
+        for byte in data:
+            a = byte & 0x1
+            b = (byte >> 4) & 0x1
+            fd.write(f"{a},{b}\n")
+    # Convert to sr
+    subprocess.run("./sigrok-cli -I csv:header=yes -i sample.csv -O srzip -o sample_cw6.sr", shell=True)
 
 
 def main():

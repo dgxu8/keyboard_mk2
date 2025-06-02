@@ -20,6 +20,8 @@ embedded-hal = "1.0.0"
 static_cell = { version = "2" }
 portable-atomic = { version = "1", features = ["unsafe-assume-single-core"] }
 trait-variant = "0.1.2"
+rotary-encoder-hal = { version = "0.6.0", features = ["table-decoder"] }
+embassy-futures = "0.1.1"
 
 [[bin]]
 name = "rightboard"
