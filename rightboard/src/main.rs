@@ -10,6 +10,8 @@ pub mod serial;
 use core::fmt::Write;
 
 use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::i2c::I2c;
+use embassy_stm32::time::Hertz;
 use embedded_io::ReadReady;
 use rotary::{encoder_monitor, ENCODER_STATE};
 use serial::{CobsRx, CobsTx, SerialBuffer};
@@ -20,12 +22,20 @@ use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
 use embassy_stm32::usart::{RingBufferedUartRx, Uart};
-use embassy_stm32::{bind_interrupts, peripherals, usart, Config};
+use embassy_stm32::{bind_interrupts, peripherals, i2c, usart, Config};
 use embassy_time::{Instant, Timer};
+use ssd1306::mode::DisplayConfigAsync;
+use ssd1306::prelude::DisplayRotation;
+use ssd1306::size::DisplaySize128x32;
+use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 use static_cell::StaticCell;
 
-bind_interrupts!(struct Irqs {
+bind_interrupts!(struct UsartIrqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
+});
+
+bind_interrupts!(struct I2CIrqs {
+    I2C2 => i2c::EventInterruptHandler<peripherals::I2C2>, i2c::ErrorInterruptHandler<peripherals::I2C2>;
 });
 
 #[embassy_executor::main]
@@ -78,8 +88,8 @@ async fn main(spawner: Spawner) -> ! {
     let uart = Uart::new(
         p.USART2,
         p.PA3, p.PA2,  // RX, TX
-        Irqs,
-        p.DMA1_CH4, p.DMA1_CH5,  // TX, RX
+        UsartIrqs,
+        p.DMA1_CH7, p.DMA1_CH6,  // TX, RX
         uart_cfg,
     ).unwrap();
     let (mut uart_tx, uart_rx) = uart.split();
@@ -107,6 +117,13 @@ async fn main(spawner: Spawner) -> ! {
     // let uart_rx = uart_rx.into_ring_buffered(rx_buf);
     uart_rx.start_uart();
 
+    // The datasheet says that the max frequency is 1MHz but 8MHz seems to work
+    let i2c = I2c::new(p.I2C2, p.PB10, p.PB11, I2CIrqs, p.DMA1_CH4, p.DMA1_CH5, Hertz::mhz(8), Default::default());
+    let i2c_intf = I2CDisplayInterface::new(i2c);
+    let mut display = Ssd1306Async::new(i2c_intf, DisplaySize128x32, DisplayRotation::Rotate0).into_terminal_mode();
+    display.init().await.unwrap();
+    display.clear().await.unwrap();
+
     let mut elasped: u64 = 0;
     let mut start: Instant;
     loop {
@@ -133,8 +150,14 @@ async fn main(spawner: Spawner) -> ! {
             uart_tx.write(str.as_bytes()).await.unwrap();
         }
         if let Some(rotary) = ENCODER_STATE.try_take() {
-            let mut str: String<16> = String::new();
-            core::write!(&mut str, "{} - {}\r\n", rotary.pos, rotary.interrupts).unwrap();
+            let mut str: String<64> = String::new();
+            core::write!(&mut str, "Position: {}\r\nInterrupt: {}\r\n{}\r\n", rotary.pos, rotary.interrupts, elasped).unwrap();
+
+            start = Instant::now();
+            display.clear().await.unwrap();
+            display.write_str(&str).await.unwrap();
+            elasped = (Instant::now() - start).as_micros();
+
             uart_tx.write(str.as_bytes()).await.unwrap();
         }
     }
