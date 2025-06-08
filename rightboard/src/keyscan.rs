@@ -2,9 +2,11 @@ use embassy_time::{Instant, Timer};
 use embassy_stm32::gpio::{Input, Output};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-
+use static_cell::StaticCell;
 
 pub static SCAN: Signal<CriticalSectionRawMutex, Scan> = Signal::new();
+pub static KEYS: StaticCell<Keyscan> = StaticCell::new();
+pub static LEDS: StaticCell<Output> = StaticCell::new();
 
 // Column x Row
 pub struct Scan {
@@ -78,12 +80,12 @@ impl<'a> Keyscan<'a> {
 
     pub fn scan_full(&mut self) -> [u8; 8] {
         let mut state = [0; 8];
-        for i in 0..self.select_pins.len() {
-            for j in 0..self.select_pins.len() {
-                self.select_pins[j].set_level((i & (1 << j) != 0).into());
+        for col in 0..self.select_pins.len() {
+            for row in 0..self.select_pins.len() {
+                self.select_pins[row].set_level((col & (1 << row) != 0).into());
             }
             for j in 0..self.input_pins.len() {
-                state[i] |= (self.input_pins[j].is_high() as u8) << j;
+                state[col] |= (self.input_pins[j].is_high() as u8) << j;
             }
         }
         state

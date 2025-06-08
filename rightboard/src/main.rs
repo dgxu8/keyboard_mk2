@@ -34,7 +34,6 @@ use ssd1306::mode::DisplayConfigAsync;
 use ssd1306::prelude::DisplayRotation;
 use ssd1306::size::DisplaySize128x32;
 use ssd1306::{I2CDisplayInterface, Ssd1306Async};
-use static_cell::StaticCell;
 
 bind_interrupts!(struct UsartIrqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
@@ -103,8 +102,6 @@ async fn main(spawner: Spawner) -> ! {
 
     // Keys and led1 are moved into keys_scan's context forever. If we need shared access we need
     // to wrap Keyscan/Output in an embassy_sync::mutex and put that into the StaticCell
-    static KEYS: StaticCell<Keyscan> = StaticCell::new();
-    static LEDS: StaticCell<Output> = StaticCell::new();
     let keys = KEYS.init(keys);
     let led1 = LEDS.init(led1);
     spawner.spawn(key_scan(keys, led1)).unwrap();
