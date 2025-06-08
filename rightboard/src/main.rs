@@ -12,10 +12,16 @@ use core::fmt::Write;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::time::Hertz;
+use embedded_graphics::mono_font::ascii::FONT_6X10;
+use embedded_graphics::mono_font::MonoTextStyleBuilder;
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::Point;
+use embedded_graphics::text::{Baseline, Text};
+use embedded_graphics::prelude::*;
 use embedded_io::ReadReady;
 use rotary::{encoder_monitor, ENCODER_STATE};
 use serial::{CobsRx, CobsTx, SerialBuffer};
-use keyscan::{key_scan, SCAN, Keyscan};
+use keyscan::{key_scan, Keyscan, KEYS, LEDS, SCAN};
 
 use heapless::{String, Vec};
 use embassy_executor::Spawner;
@@ -120,9 +126,12 @@ async fn main(spawner: Spawner) -> ! {
     // The datasheet says that the max frequency is 1MHz but 8MHz seems to work
     let i2c = I2c::new(p.I2C2, p.PB10, p.PB11, I2CIrqs, p.DMA1_CH4, p.DMA1_CH5, Hertz::mhz(8), Default::default());
     let i2c_intf = I2CDisplayInterface::new(i2c);
-    let mut display = Ssd1306Async::new(i2c_intf, DisplaySize128x32, DisplayRotation::Rotate0).into_terminal_mode();
+    let mut display = Ssd1306Async::new(i2c_intf, DisplaySize128x32, DisplayRotation::Rotate0).into_buffered_graphics_mode();
     display.init().await.unwrap();
-    display.clear().await.unwrap();
+    display.clear(BinaryColor::Off).unwrap();
+    display.flush().await.unwrap();
+
+    let text_style = MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::On).build();
 
     let mut elasped: u64 = 0;
     let mut start: Instant;
@@ -150,12 +159,21 @@ async fn main(spawner: Spawner) -> ! {
             uart_tx.write(str.as_bytes()).await.unwrap();
         }
         if let Some(rotary) = ENCODER_STATE.try_take() {
-            let mut str: String<64> = String::new();
-            core::write!(&mut str, "Position: {}\r\nInterrupt: {}\r\n{}\r\n", rotary.pos, rotary.interrupts, elasped).unwrap();
+            let mut str: String<16> = String::new();
 
             start = Instant::now();
-            display.clear().await.unwrap();
-            display.write_str(&str).await.unwrap();
+            display.clear(BinaryColor::Off).unwrap();
+            core::write!(&mut str, "Pos: {}", rotary.pos).unwrap();
+            Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(&mut display).unwrap();
+            str.clear();
+
+            core::write!(&mut str, "Int: {}", rotary.interrupts).unwrap();
+            Text::with_baseline(&str, Point::new(0, 10), text_style, Baseline::Top).draw(&mut display).unwrap();
+            str.clear();
+
+            core::write!(&mut str, "{}", elasped).unwrap();
+            Text::with_baseline(&str, Point::new(0, 20), text_style, Baseline::Top).draw(&mut display).unwrap();
+            display.flush().await.unwrap();
             elasped = (Instant::now() - start).as_micros();
 
             uart_tx.write(str.as_bytes()).await.unwrap();

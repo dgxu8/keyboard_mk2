@@ -23,6 +23,7 @@ trait-variant = "0.1.2"
 rotary-encoder-hal = { version = "0.6.0", features = ["table-decoder"] }
 embassy-futures = "0.1.1"
 ssd1306 = { version = "0.10.0", features = ["async"] }
+embedded-graphics = { version = "0.8.1", features = ["fixed_point"] }
 
 [[bin]]
 name = "rightboard"
