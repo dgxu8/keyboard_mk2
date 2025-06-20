@@ -4,6 +4,7 @@ import argparse
 import serial
 import struct
 import subprocess
+import sys
 import time
 
 from dataclasses import dataclass
@@ -75,6 +76,18 @@ def cobs_self_test():
     print(f"{unpacked.hex()} - {data}")
 
 
+def poll_for_packet(ser):
+        packet = bytearray()
+        while (recv := ser.read()) != b"\x00":
+            packet += recv
+        if len(packet) == 0:
+            return b""
+        packet += b"\x00"
+        data, remainder = cobs_decode(packet)
+        assert len(remainder) == 0, "Some how we got left over data"
+        return data
+
+
 def rb_encode_test(ser):
     while True:
         packet = bytearray()
@@ -87,6 +100,38 @@ def rb_encode_test(ser):
         data, _ = cobs_decode(packet)
         scan_time, cobs_time = struct.unpack("<QQ", data)
         print(f"{scan_time}us, COBS: {cobs_time}us")
+
+
+def rb_poll_keys(ser):
+    last_press = time.monotonic()
+    last_release = time.monotonic()
+    while True:
+        while len(data := poll_for_packet(ser)) == 0:
+            print("serial timeout looking for timestamp")
+        curr, = struct.unpack("<Q", data)
+        while len(data := poll_for_packet(ser)) == 0:
+            print("serial timeout looking for update")
+        # print(f"{len(data)}: 0x{data.hex()}")
+        data = int(data[0])
+        # data, curr= struct.unpack("<BQ", data)  # curr is micro seconds
+        val = data & 0x1
+        row = (data >> 1) & 0b1111
+        col = (data >> 5)
+
+        if val == 1:
+            if (elapsed := curr - last_press) < 100_000:
+                print(f"double press detected: {elapsed/1000:.3f}")
+                last_release = curr
+                continue
+            last_press = curr
+        else:
+            if (elapsed := curr - last_release) < 100_000:
+                print(f"double release detected: {elapsed/1000:.3f}")
+                last_release = curr
+                continue
+            last_release = curr
+            print(f"Pressed: {(last_release-last_press)/1000:.3f}")
+        # print(f"{curr/1_000:.3f}: ({col}, {row}): {val}")
 
 
 def rb_decode_test(ser):
@@ -133,8 +178,8 @@ def main():
     args = parser.parse_args()
 
     try:
-        with serial.Serial(args.serial, 2_000_000, timeout=0.1) as ser:
-            rb_decode_test(ser)
+        with serial.Serial(args.serial, 2_000_000, timeout=None) as ser:
+            rb_poll_keys(ser)
     except KeyboardInterrupt:
         pass
 

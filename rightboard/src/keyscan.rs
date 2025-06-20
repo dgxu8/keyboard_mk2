@@ -1,12 +1,33 @@
-use embassy_time::{Instant, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embassy_stm32::gpio::{Input, Output};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
+use embedded_graphics::mono_font::ascii::FONT_6X10;
+use embedded_graphics::mono_font::MonoTextStyleBuilder;
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::*;
+use embedded_graphics::text::{Baseline, Text};
+use heapless::{String, Vec};
 use static_cell::StaticCell;
+use core::fmt::Write;
+use core::ops::DerefMut;
+
+use crate::serial::CobsTx;
+use crate::{DisplayAsyncMutex, UartAsyncMutex};
 
 pub static SCAN: Signal<CriticalSectionRawMutex, Scan> = Signal::new();
 pub static KEYS: StaticCell<Keyscan> = StaticCell::new();
 pub static LEDS: StaticCell<Output> = StaticCell::new();
+
+const ROW_LEN: usize = 8;
+const COL_LEN: usize = 8;
+
+#[derive(Debug)]
+enum Error {
+    UpdateOverflow,
+}
+
+type KeyUpdate = Vec<u8, 8>;
 
 // Column x Row
 pub struct Scan {
@@ -23,19 +44,40 @@ impl Scan {
 }
 
 #[embassy_executor::task]
-pub async fn key_scan(keys: &'static mut Keyscan<'static>, led: &'static mut Output<'static>) {
+pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartAsyncMutex, display: &'static DisplayAsyncMutex) {
+    let mut str: String<16> = String::new();
+    let text_style = MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::On).build();
+    let mut max = Duration::default();
     loop {
-        let mut scan: Scan = Scan::new();
-        Timer::after_millis(5).await;
+        // If we get more than 8 changes send a full keystate scan
+        Timer::after_millis(1).await;  // set to 100ms to allow for easier triggering of multiple values
         let start: Instant = Instant::now();
-        scan.state = keys.scan_full();
+        // let scan = keys.scan_no_debounce();
+        // let scan = keys.scan_integrate();
+        let scan = keys.scan_shift();
+        match scan {
+            Ok(update) => {
+                if !update.is_empty() {
+                    let mut uart_tx = uart_tx.lock().await;
+                    uart_tx.write_cobs(start.as_micros().to_le_bytes().as_slice()).await.unwrap();
+                    uart_tx.write_cobs(update.as_slice()).await.unwrap();
+                }
+            },
+            Err(_) => {
+                let mut uart_tx = uart_tx.lock().await;
+                uart_tx.write_cobs(start.as_micros().to_le_bytes().as_slice()).await.unwrap();
+                uart_tx.write_cobs(keys.get_full_state().as_slice()).await.unwrap();
+            },
+        };
         let elapsed = Instant::now() - start;
-        if scan.state[0] > 0 {
-            led.set_high();
-            scan.scan_time = elapsed.as_micros();
-            SCAN.signal(scan);
-        } else {
-            led.set_low();
+        if elapsed > max {
+            let mut display = display.lock().await;
+            display.clear(BinaryColor::Off).unwrap();
+            str.clear();
+            core::write!(&mut str, "{}", elapsed.as_micros()).unwrap();
+            Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(display.deref_mut()).unwrap();
+            display.flush().await.unwrap();
+            max = elapsed;
         }
     }
 }
@@ -44,6 +86,8 @@ pub struct Keyscan<'a> {
     select_pins: [Output<'a>; 3],
     _enable: Output<'a>,
     input_pins: [Input<'a>; 8],
+
+    state: [[u8; ROW_LEN]; COL_LEN],
 }
 
 impl<'a> Keyscan<'a> {
@@ -52,6 +96,7 @@ impl<'a> Keyscan<'a> {
             select_pins,
             _enable: enable,
             input_pins,
+            state: [[0u8; ROW_LEN]; COL_LEN],
         }
     }
 
@@ -78,16 +123,109 @@ impl<'a> Keyscan<'a> {
         state
     }
 
-    pub fn scan_full(&mut self) -> [u8; 8] {
-        let mut state = [0; 8];
-        for col in 0..self.select_pins.len() {
-            for row in 0..self.select_pins.len() {
-                self.select_pins[row].set_level((col & (1 << row) != 0).into());
-            }
-            for j in 0..self.input_pins.len() {
-                state[col] |= (self.input_pins[j].is_high() as u8) << j;
+    fn get_full_state(&self) -> [u8; 8] {
+        let mut state: [u8; 8] = [0; 8];
+        for (i, col) in self.state.iter().enumerate() {
+            for (j, val) in col.iter().enumerate() {
+                state[i] |= val << j;
             }
         }
         state
+    }
+
+    #[allow(dead_code)]
+    fn scan_no_debounce(&mut self) -> Result<KeyUpdate, Error> {
+        let mut update: KeyUpdate = Vec::new();
+        let mut overflow = false;
+        for col in 0..8 {
+            self.set(col as u8);
+            for row in 0..self.input_pins.len() {
+                let val = self.input_pins[row].is_high() as u8;
+                if self.state[col][row] != val {
+                    self.state[col][row] = val;
+                    overflow = update.push((col as u8) << 5 | (row as u8) << 1 | val).is_err();
+                }
+            }
+        }
+        if overflow {
+            Err(Error::UpdateOverflow)
+        } else {
+            Ok(update)
+        }
+    }
+
+    #[allow(dead_code)]
+    fn scan_integrate(&mut self) -> Result<KeyUpdate, Error> {
+        let mut update: KeyUpdate = Vec::new();
+        let mut overflow = false;
+        for col in 0..8 {
+            self.set(col as u8);
+
+            for row in 0..self.input_pins.len() {
+                if self.input_pins[row].is_high() {
+                    if self.state[col][row] < 10 {
+                        self.state[col][row] += 1;
+                        if self.state[col][row] == 5 {
+                            self.state[col][row] = 10;
+                            overflow = update.push((col as u8) << 5 | (row as u8) << 1 | 1).is_err();
+                        }
+                    }
+                } else {
+                    if self.state[col][row] > 0 {
+                        self.state[col][row] -= 1;
+                        if self.state[col][row] == 5 {
+                            self.state[col][row] = 0;
+                            overflow = update.push((col as u8) << 5 | (row as u8) << 1 | 0).is_err();
+                        }
+                    }
+                }
+            }
+        }
+        if overflow {
+            Err(Error::UpdateOverflow)
+        } else {
+            Ok(update)
+        }
+    }
+
+    #[allow(dead_code)]
+    fn scan_shift(&mut self) -> Result<KeyUpdate, Error> {
+        let mut update: KeyUpdate = Vec::new();
+        let mut overflow = false;
+        for col in 0..8 {
+            self.set(col as u8);
+
+            for row in 0..self.input_pins.len() {
+                let mut val = self.state[col][row] & 0b1000_0000;
+                val |= (self.state[col][row] << 1) & 0b0001_1111;
+                val |= self.input_pins[row].is_high() as u8;
+                if val == 0b0001_1111 {
+                    self.state[col][row] = 0b1001_1111;
+                    overflow = update.push((col as u8) << 5 | (row as u8) << 1 | 1).is_err();
+                } else if val == 0b1000_0000 {
+                    self.state[col][row] = 0;
+                    overflow = update.push((col as u8) << 5 | (row as u8) << 1 | 0).is_err();
+                } else {
+                    self.state[col][row] = val;
+                }
+            }
+        }
+        if overflow {
+            Err(Error::UpdateOverflow)
+        } else {
+            Ok(update)
+        }
+    }
+
+    #[allow(dead_code)]
+    async fn send_state(col: u8, row: u8, val: u8, uart_tx: &UartAsyncMutex) {
+        let mut msg: Vec<u8, 16> = Vec::new();
+        let time = Instant::now();
+
+        msg.push((col as u8) << 5 | (row as u8) << 1 | val).unwrap();
+        msg.extend_from_slice(&time.as_micros().to_le_bytes()).unwrap();
+
+        let mut uart_tx = uart_tx.lock().await;
+        uart_tx.write_cobs(msg.as_slice()).await.unwrap();
     }
 }

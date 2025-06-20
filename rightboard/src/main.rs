@@ -8,10 +8,14 @@ pub mod rotary;
 pub mod serial;
 
 use core::fmt::Write;
+use core::ops::DerefMut;
 
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::i2c::I2c;
+use embassy_stm32::mode::Async;
 use embassy_stm32::time::Hertz;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embedded_graphics::mono_font::ascii::FONT_6X10;
 use embedded_graphics::mono_font::MonoTextStyleBuilder;
 use embedded_graphics::pixelcolor::BinaryColor;
@@ -27,13 +31,14 @@ use heapless::{String, Vec};
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
-use embassy_stm32::usart::{RingBufferedUartRx, Uart};
+use embassy_stm32::usart::{RingBufferedUartRx, Uart, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals, i2c, usart, Config};
 use embassy_time::{Instant, Timer};
-use ssd1306::mode::DisplayConfigAsync;
-use ssd1306::prelude::DisplayRotation;
+use ssd1306::mode::{BufferedGraphicsModeAsync, DisplayConfigAsync};
+use ssd1306::prelude::{DisplayRotation, I2CInterface};
 use ssd1306::size::DisplaySize128x32;
 use ssd1306::{I2CDisplayInterface, Ssd1306Async};
+use static_cell::StaticCell;
 
 bind_interrupts!(struct UsartIrqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
@@ -42,6 +47,10 @@ bind_interrupts!(struct UsartIrqs {
 bind_interrupts!(struct I2CIrqs {
     I2C2 => i2c::EventInterruptHandler<peripherals::I2C2>, i2c::ErrorInterruptHandler<peripherals::I2C2>;
 });
+
+type UartAsyncMutex = Mutex<CriticalSectionRawMutex, UartTx<'static, Async>>;
+type DisplayAsyncMutex = Mutex<CriticalSectionRawMutex, Ssd1306Async<I2CInterface<I2c<'static, Async>>, DisplaySize128x32, BufferedGraphicsModeAsync<DisplaySize128x32>>>;
+// Ssd1306Async<I2CInterface<I2c<'_, Async>>, DisplaySize128x32, BufferedGraphicsModeAsync<DisplaySize128x32>>
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
@@ -97,14 +106,16 @@ async fn main(spawner: Spawner) -> ! {
         p.DMA1_CH7, p.DMA1_CH6,  // TX, RX
         uart_cfg,
     ).unwrap();
-    let (mut uart_tx, uart_rx) = uart.split();
+    let (uart_tx, uart_rx) = uart.split();
     led0.set_high();
 
     // Keys and led1 are moved into keys_scan's context forever. If we need shared access we need
     // to wrap Keyscan/Output in an embassy_sync::mutex and put that into the StaticCell
+    static UART_TX: StaticCell<UartAsyncMutex> = StaticCell::new();
+    let uart_tx = UART_TX.init(Mutex::new(uart_tx));
+
     let keys = KEYS.init(keys);
-    let led1 = LEDS.init(led1);
-    spawner.spawn(key_scan(keys, led1)).unwrap();
+    let _led1 = LEDS.init(led1);
 
     // Rotary Encoder
     let rot_pin_a = ExtiInput::new(p.PB14, p.EXTI14, Pull::None);
@@ -128,12 +139,17 @@ async fn main(spawner: Spawner) -> ! {
     display.clear(BinaryColor::Off).unwrap();
     display.flush().await.unwrap();
 
+    static SSD1306: StaticCell<DisplayAsyncMutex> = StaticCell::new();
+    let display = SSD1306.init(Mutex::new(display));
+
     let text_style = MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::On).build();
+
+    spawner.spawn(key_scan(keys, uart_tx, display)).unwrap();
 
     let mut elasped: u64 = 0;
     let mut start: Instant;
     loop {
-        Timer::after_millis(1).await;
+        Timer::after_millis(5).await;
         if let Some(scan) = SCAN.try_take() {
             let mut data: SerialBuffer = Vec::new();
 
@@ -141,7 +157,10 @@ async fn main(spawner: Spawner) -> ! {
             data.extend_from_slice(&elasped.to_le_bytes()).unwrap();
 
             start = Instant::now();
-            uart_tx.write_cobs(data.as_slice()).await.unwrap();
+            {
+                let mut uart_tx = uart_tx.lock().await;
+                uart_tx.write_cobs(data.as_slice()).await.unwrap();
+            }
             elasped = (Instant::now() - start).as_micros();
         }
         if uart_rx.read_ready().unwrap() {
@@ -153,27 +172,33 @@ async fn main(spawner: Spawner) -> ! {
 
             let mut str: String<30> = String::new();
             core::write!(&mut str, ">> {} - {}", data, elasped).unwrap();
-            uart_tx.write(str.as_bytes()).await.unwrap();
+            {
+                let mut uart_tx = uart_tx.lock().await;
+                uart_tx.write(str.as_bytes()).await.unwrap();
+            }
         }
         if let Some(rotary) = ENCODER_STATE.try_take() {
             let mut str: String<16> = String::new();
 
             start = Instant::now();
-            display.clear(BinaryColor::Off).unwrap();
-            core::write!(&mut str, "Pos: {}", rotary.pos).unwrap();
-            Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(&mut display).unwrap();
-            str.clear();
+            {
+                let mut display = display.lock().await;
+                display.clear(BinaryColor::Off).unwrap();
+                core::write!(&mut str, "Pos: {}", rotary.pos).unwrap();
+                Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(display.deref_mut()).unwrap();
+                str.clear();
 
-            core::write!(&mut str, "Int: {}", rotary.interrupts).unwrap();
-            Text::with_baseline(&str, Point::new(0, 10), text_style, Baseline::Top).draw(&mut display).unwrap();
-            str.clear();
+                core::write!(&mut str, "Int: {}", rotary.interrupts).unwrap();
+                Text::with_baseline(&str, Point::new(0, 10), text_style, Baseline::Top).draw(display.deref_mut()).unwrap();
+                str.clear();
 
-            core::write!(&mut str, "{}", elasped).unwrap();
-            Text::with_baseline(&str, Point::new(0, 20), text_style, Baseline::Top).draw(&mut display).unwrap();
-            display.flush().await.unwrap();
+                core::write!(&mut str, "{}", elasped).unwrap();
+                Text::with_baseline(&str, Point::new(0, 20), text_style, Baseline::Top).draw(display.deref_mut()).unwrap();
+                display.flush().await.unwrap();
+            }
             elasped = (Instant::now() - start).as_micros();
 
-            uart_tx.write(str.as_bytes()).await.unwrap();
+            // uart_tx.write(str.as_bytes()).await.unwrap();
         }
     }
 }
