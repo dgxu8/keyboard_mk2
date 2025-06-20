@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 embassy-stm32 = { version = "0.2.0", features = ["stm32l071cb", "unstable-pac", "time-driver-any", "exti", "memory-x"]  }
 embassy-sync = { version = "0.6.2" }
-embassy-executor = { version = "0.7.0", features = ["arch-cortex-m", "executor-thread"] }
+embassy-executor = { version = "0.7.0", features = ["arch-cortex-m", "executor-thread", "nightly"] }
 embassy-time = "0.4.0"
 
 embedded-io = "0.6.1"

@@ -1,5 +1,8 @@
 #![no_std]
 #![no_main]
+#![feature(cold_path)]
+#![feature(likely_unlikely)]
+#![feature(impl_trait_in_assoc_type)]
 
 extern crate panic_halt;
 

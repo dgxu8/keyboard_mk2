@@ -12,6 +12,8 @@ use static_cell::StaticCell;
 use core::fmt::Write;
 use core::ops::DerefMut;
 
+use core::hint::cold_path;
+
 use crate::serial::CobsTx;
 use crate::{DisplayAsyncMutex, UartAsyncMutex};
 
@@ -55,6 +57,7 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
         // let scan = keys.scan_no_debounce();
         // let scan = keys.scan_integrate();
         let scan = keys.scan_shift();
+        let elapsed = Instant::now() - start;
         match scan {
             Ok(update) => {
                 if !update.is_empty() {
@@ -64,12 +67,12 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
                 }
             },
             Err(_) => {
+                cold_path();
                 let mut uart_tx = uart_tx.lock().await;
                 uart_tx.write_cobs(start.as_micros().to_le_bytes().as_slice()).await.unwrap();
                 uart_tx.write_cobs(keys.get_full_state().as_slice()).await.unwrap();
             },
         };
-        let elapsed = Instant::now() - start;
         if elapsed > max {
             let mut display = display.lock().await;
             display.clear(BinaryColor::Off).unwrap();
