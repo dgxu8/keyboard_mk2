@@ -69,9 +69,9 @@ async fn main(spawner: Spawner) -> ! {
 
     // Configure Decoder
     let key_select_pins: [Output; 3] = [
-        Output::new(p.PA7, Level::Low, Speed::High),
-        Output::new(p.PA6, Level::Low, Speed::High),
-        Output::new(p.PA5, Level::Low, Speed::High),
+        Output::new(p.PA7, Level::Low, Speed::VeryHigh),
+        Output::new(p.PA6, Level::Low, Speed::VeryHigh),
+        Output::new(p.PA5, Level::Low, Speed::VeryHigh),
     ];
     // Configure Decoder input
     let key_inputs: [Input; 8] = [

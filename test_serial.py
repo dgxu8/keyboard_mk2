@@ -130,7 +130,7 @@ def rb_poll_keys(ser):
                 last_release = curr
                 continue
             last_release = curr
-            print(f"Pressed: {(last_release-last_press)/1000:.3f}")
+            print(f"({col}, {row}): {(last_release-last_press)/1000:.3f}")
         # print(f"{curr/1_000:.3f}: ({col}, {row}): {val}")
 
 

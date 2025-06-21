@@ -1,5 +1,6 @@
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Ticker};
 use embassy_stm32::gpio::{Input, Output};
+use embassy_stm32::pac;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_graphics::mono_font::ascii::FONT_6X10;
@@ -50,9 +51,10 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
     let mut str: String<16> = String::new();
     let text_style = MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::On).build();
     let mut max = Duration::default();
+
+    let mut ticker = Ticker::every(Duration::from_millis(1));
     loop {
         // If we get more than 8 changes send a full keystate scan
-        Timer::after_millis(1).await;  // set to 100ms to allow for easier triggering of multiple values
         let start: Instant = Instant::now();
         // let scan = keys.scan_no_debounce();
         // let scan = keys.scan_integrate();
@@ -82,6 +84,7 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
             display.flush().await.unwrap();
             max = elapsed;
         }
+        ticker.next().await;
     }
 }
 
@@ -103,10 +106,21 @@ impl<'a> Keyscan<'a> {
         }
     }
 
+    #[inline(always)]
     pub fn set(&mut self, val: u8) {
         for i in 0..self.select_pins.len() {
             self.select_pins[i].set_level((val & (1 << i) != 0).into());
         }
+    }
+
+    #[inline(always)]
+    fn set_raw(&mut self, val: u32) {
+        assert!(val < 8);
+        let mut reg: u32 = ((val & 0b100) >> 2) | (val & 0b010) | ((val & 0b001) << 2);
+        reg <<= 5;
+        pac::GPIOA.bsrr().write(|w| w.0 = reg);
+        reg = (!reg & (0b111 << 5)) << 16;
+        pac::GPIOA.bsrr().write(|w| w.0 = reg);
     }
 
     pub fn read_inputs(&mut self) -> u8 {
@@ -141,7 +155,7 @@ impl<'a> Keyscan<'a> {
         let mut update: KeyUpdate = Vec::new();
         let mut overflow = false;
         for col in 0..8 {
-            self.set(col as u8);
+            self.set_raw(col as _);
             for row in 0..self.input_pins.len() {
                 let val = self.input_pins[row].is_high() as u8;
                 if self.state[col][row] != val {
@@ -162,7 +176,7 @@ impl<'a> Keyscan<'a> {
         let mut update: KeyUpdate = Vec::new();
         let mut overflow = false;
         for col in 0..8 {
-            self.set(col as u8);
+            self.set_raw(col as _);
 
             for row in 0..self.input_pins.len() {
                 if self.input_pins[row].is_high() {
@@ -196,7 +210,7 @@ impl<'a> Keyscan<'a> {
         let mut update: KeyUpdate = Vec::new();
         let mut overflow = false;
         for col in 0..8 {
-            self.set(col as u8);
+            self.set_raw(col as _);
 
             for row in 0..self.input_pins.len() {
                 let mut val = self.state[col][row] & 0b1000_0000;
