@@ -15,7 +15,7 @@ use core::ops::DerefMut;
 
 use core::hint::cold_path;
 
-use crate::serial::CobsTx;
+use crate::serial::{CobsTx, PacketId};
 use crate::{DisplayAsyncMutex, UartAsyncMutex};
 
 pub static SCAN: Signal<CriticalSectionRawMutex, Scan> = Signal::new();
@@ -64,15 +64,15 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
             Ok(update) => {
                 if !update.is_empty() {
                     let mut uart_tx = uart_tx.lock().await;
-                    uart_tx.write_cobs(start.as_micros().to_le_bytes().as_slice()).await.unwrap();
-                    uart_tx.write_cobs(update.as_slice()).await.unwrap();
+                    uart_tx.write_cobs(PacketId::Timestamp, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
+                    uart_tx.write_cobs(PacketId::KeyChange, update.as_slice()).await.unwrap();
                 }
             },
             Err(_) => {
                 cold_path();
                 let mut uart_tx = uart_tx.lock().await;
-                uart_tx.write_cobs(start.as_micros().to_le_bytes().as_slice()).await.unwrap();
-                uart_tx.write_cobs(keys.get_full_state().as_slice()).await.unwrap();
+                uart_tx.write_cobs(PacketId::Timestamp, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
+                uart_tx.write_cobs(PacketId::FullState, keys.get_full_state().as_slice()).await.unwrap();
             },
         };
         if elapsed > max {
