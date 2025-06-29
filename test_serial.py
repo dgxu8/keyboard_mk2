@@ -103,35 +103,79 @@ def rb_encode_test(ser):
 
 
 def rb_poll_keys(ser):
+    class Toggle:
+        def __init__(self, timestamp, col, row, state):
+            self.ts = timestamp
+            self.col = col
+            self.row = row
+            self.state = state
+
     last_press = time.monotonic()
     last_release = time.monotonic()
-    while True:
-        while len(data := poll_for_packet(ser)) == 0:
-            print("serial timeout looking for timestamp")
-        curr, = struct.unpack("<Q", data)
-        while len(data := poll_for_packet(ser)) == 0:
-            print("serial timeout looking for update")
-        # print(f"{len(data)}: 0x{data.hex()}")
-        data = int(data[0])
-        # data, curr= struct.unpack("<BQ", data)  # curr is micro seconds
-        val = data & 0x1
-        row = (data >> 1) & 0b1111
-        col = (data >> 5)
 
-        if val == 1:
-            if (elapsed := curr - last_press) < 100_000:
-                print(f"double press detected: {elapsed/1000:.3f}")
-                last_release = curr
+    log = []
+    LOG_FILE = "data.csv"
+    try:
+        while True:
+            while len(data := poll_for_packet(ser)) == 0:
+                print("serial timeout looking for timestamp")
+            cmd, curr = struct.unpack("<BQ", data)
+            assert cmd == 5, "Looking for timestamp id"
+            while len(data := poll_for_packet(ser)) == 0:
+                print("serial timeout looking for update")
+            # print(f"{len(data)}: 0x{data.hex()}")
+            cmd, = struct.unpack("<B", data[:1])
+            assert cmd == 2 or cmd == 3,  "Looking for key change id"
+            if cmd == 3:
+                print(f"Full state: 0x{data[1:].hex()}")
                 continue
-            last_press = curr
-        else:
-            if (elapsed := curr - last_release) < 100_000:
-                print(f"double release detected: {elapsed/1000:.3f}")
+            data, = struct.unpack("<B", data[1:2])
+            # data, curr= struct.unpack("<BQ", data)  # curr is micro seconds
+            val = data & 0x1
+            row = (data >> 1) & 0b111
+            col = (data >> 4) & 0b111
+            alt = data >> 7
+            log.append(Toggle(curr, col, row, val))
+
+            if val == 1:
+                if (elapsed := curr - last_press) < 100_000:
+                    print(f"double press detected: {elapsed/1000:.3f}")
+                    last_press = curr
+                    continue
+                last_press = curr
+            else:
+                if (elapsed := curr - last_release) < 100_000:
+                    print(f"double release detected: {elapsed/1000:.3f}")
+                    last_release = curr
+                    continue
                 last_release = curr
-                continue
-            last_release = curr
-            print(f"({col}, {row}): {(last_release-last_press)/1000:.3f}")
-        # print(f"{curr/1_000:.3f}: ({col}, {row}): {val}")
+                print(f"[{alt}]({col}, {row}): {(last_release-last_press)/1000:.3f}")
+            # print(f"{curr/1_000:.3f}: ({col}, {row}): {val}")
+    except KeyboardInterrupt:
+        pass
+    start_us = log[0].ts
+    last_us = 0
+    channels = {}
+    for toggle in log:
+        channels[f"{toggle.col}:{toggle.row}"] = 0
+    channel_cnt = len(channels.keys())
+    channel_names = list(channels.keys())
+    channel_names.sort()
+    with open(LOG_FILE, "w") as fd:
+        fd.write(",".join(channel_names))
+        fd.write("\n")
+        for entry in log:
+            entry_ts = entry.ts - start_us
+            for _ in range(last_us, entry_ts):
+                fd.write(",".join([str(channels[n]) for n in channel_names]))
+                fd.write("\n")
+            last_us = entry_ts
+            for name in channel_names:
+                if name == f"{entry.col}:{entry.row}":
+                    channels[name] = entry.state
+            fd.write(",".join([str(channels[n]) for n in channel_names]))
+            fd.write("\n")
+    subprocess.run(f"", shell=True)
 
 
 def rb_decode_test(ser):
@@ -177,11 +221,8 @@ def main():
     parser.add_argument("serial", type=str, help="Serial port of device")
     args = parser.parse_args()
 
-    try:
-        with serial.Serial(args.serial, 2_000_000, timeout=None) as ser:
-            rb_poll_keys(ser)
-    except KeyboardInterrupt:
-        pass
+    with serial.Serial(args.serial, 2_000_000, timeout=None) as ser:
+        rb_poll_keys(ser)
 
 
 if __name__ == "__main__":

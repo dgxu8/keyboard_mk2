@@ -28,7 +28,7 @@ use embedded_graphics::prelude::*;
 use embedded_io::ReadReady;
 use rotary::{encoder_monitor, ENCODER_STATE};
 use serial::{CobsRx, CobsTx, SerialBuffer};
-use keyscan::{key_scan, Keyscan, KEYS, LEDS, SCAN};
+use keyscan::{key_scan, Keyscan, KEYS};
 
 use heapless::{String, Vec};
 use embassy_executor::Spawner;
@@ -89,11 +89,13 @@ async fn main(spawner: Spawner) -> ! {
         key_select_pins,
         Output::new(p.PA4, Level::High, Speed::High),
         key_inputs,
+        Input::new(p.PB15, Pull::None),
+        Input::new(p.PB0, Pull::Down),
     );
 
     // Configure LEDs
     let mut led0 = Output::new(p.PB6, Level::Low, Speed::Low);
-    let led1 = Output::new(p.PB5, Level::Low, Speed::Low);
+    let _led1 = Output::new(p.PB5, Level::Low, Speed::Low);
 
     // Configure usart default:
     // baudrate: 115200,
@@ -118,7 +120,6 @@ async fn main(spawner: Spawner) -> ! {
     let uart_tx = UART_TX.init(Mutex::new(uart_tx));
 
     let keys = KEYS.init(keys);
-    let _led1 = LEDS.init(led1);
 
     // Rotary Encoder
     let rot_pin_a = ExtiInput::new(p.PB14, p.EXTI14, Pull::None);
@@ -153,19 +154,6 @@ async fn main(spawner: Spawner) -> ! {
     let mut start: Instant;
     loop {
         Timer::after_millis(5).await;
-        if let Some(scan) = SCAN.try_take() {
-            let mut data: SerialBuffer = Vec::new();
-
-            data.extend_from_slice(&scan.scan_time.to_le_bytes()).unwrap();
-            data.extend_from_slice(&elasped.to_le_bytes()).unwrap();
-
-            start = Instant::now();
-            {
-                let mut uart_tx = uart_tx.lock().await;
-                uart_tx.write_cobs(data.as_slice()).await.unwrap();
-            }
-            elasped = (Instant::now() - start).as_micros();
-        }
         if uart_rx.read_ready().unwrap() {
             let mut msg: SerialBuffer = Vec::new();
             start = Instant::now();
