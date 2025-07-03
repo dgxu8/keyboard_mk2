@@ -26,11 +26,8 @@ use embedded_graphics::prelude::Point;
 use embedded_graphics::text::{Baseline, Text};
 use embedded_graphics::prelude::*;
 use embedded_io::ReadReady;
-use rotary::{encoder_monitor, ENCODER_STATE};
-use serial::{CobsRx, CobsTx, SerialBuffer};
-use keyscan::{key_scan, Keyscan, KEYS};
 
-use heapless::{String, Vec};
+use heapless::String;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
@@ -42,6 +39,10 @@ use ssd1306::prelude::{DisplayRotation, I2CInterface};
 use ssd1306::size::DisplaySize128x32;
 use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 use static_cell::StaticCell;
+
+use crate::rotary::{encoder_monitor, ENCODER_STATE};
+use crate::keyscan::{key_scan, Keyscan, ALT_EN, KEYS, REPORT_FULL};
+use crate::serial::{CobsRx, CobsTx, SerialBuffer};
 
 bind_interrupts!(struct UsartIrqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
@@ -66,6 +67,10 @@ async fn main(spawner: Spawner) -> ! {
         mul: PllMul::MUL4,
     });
     let p = embassy_stm32::init(config);
+    //
+    // Configure LEDs
+    let mut led0 = Output::new(p.PB6, Level::Low, Speed::Low);
+    let mut led1 = Output::new(p.PB5, Level::High, Speed::Low);
 
     // Configure Decoder
     let key_select_pins: [Output; 3] = [
@@ -92,10 +97,6 @@ async fn main(spawner: Spawner) -> ! {
         Input::new(p.PB15, Pull::None),
         Input::new(p.PB0, Pull::Down),
     );
-
-    // Configure LEDs
-    let mut led0 = Output::new(p.PB6, Level::Low, Speed::Low);
-    let _led1 = Output::new(p.PB5, Level::Low, Speed::Low);
 
     // Configure usart default:
     // baudrate: 115200,
@@ -126,7 +127,7 @@ async fn main(spawner: Spawner) -> ! {
     let rot_pin_b = ExtiInput::new(p.PB13, p.EXTI13, Pull::None);
     spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a)).unwrap();
 
-    const RX_BUF_SIZE: usize = 16;
+    const RX_BUF_SIZE: usize = 32;
     let mut rx_buf: [u8; RX_BUF_SIZE] = [0; RX_BUF_SIZE];
     let mut uart_rx: RingBufferedUartRx = uart_rx.into_ring_buffered(&mut rx_buf);
     // Need to use singleton!() if rx_buf goes out of scope but uart_rx is still needed, below
@@ -150,22 +151,21 @@ async fn main(spawner: Spawner) -> ! {
 
     spawner.spawn(key_scan(keys, uart_tx, display)).unwrap();
 
+    led1.set_low();
     let mut elasped: u64 = 0;
     let mut start: Instant;
     loop {
         Timer::after_millis(5).await;
         if uart_rx.read_ready().unwrap() {
-            let mut msg: SerialBuffer = Vec::new();
-            start = Instant::now();
-            uart_rx.read_cobs(&mut msg).await.unwrap();
-            elasped = (Instant::now() - start).as_micros();
-            let data: u64 = u64::from_le_bytes(msg[..].try_into().unwrap());
-
-            let mut str: String<30> = String::new();
-            core::write!(&mut str, ">> {} - {}", data, elasped).unwrap();
-            {
-                let mut uart_tx = uart_tx.lock().await;
-                uart_tx.write(str.as_bytes()).await.unwrap();
+            let mut buffer = SerialBuffer::new();
+            uart_rx.read_cobs(&mut buffer).await.unwrap();
+            match buffer[0] {
+                serial::ALT_ENABLE => ALT_EN.signal(buffer[1] == 1),
+                serial::GET_STATE => REPORT_FULL.signal(true),
+                x => {
+                    let mut uart_tx = uart_tx.lock().await;
+                    uart_tx.send_nack(x).await.unwrap();
+                },
             }
         }
         if let Some(rotary) = ENCODER_STATE.try_take() {

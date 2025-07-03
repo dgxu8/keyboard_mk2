@@ -6,6 +6,7 @@ import struct
 import subprocess
 import sys
 import time
+import queue
 
 from dataclasses import dataclass
 from enum import Enum
@@ -15,11 +16,14 @@ DELIM = 0  # 1-255
 MAX_PACKET_SIZE = 254
 
 class Opcode(Enum):
-    DNU = 0  # block out 0 incase we want to use it as the delimeter
-    COMMAND = 1
-    GET_KEY_STATE = 2  # Returns list of all pressed keys
-    KEYCODE = 3  # returns 2 bytes with row/col
-    OLED_DRAW = 4
+    ACK = 0
+    NACK = 1
+    KEY_CHANGE = 2  # Returns list of all pressed keys
+    GET_STATE = 3  # returns 2 bytes with row/col
+    FULL_STATE = 4
+    ALT_STATE = 5
+    ALT_ENABLE = 6
+    TIMESTAMP = 10
 
 
 @dataclass
@@ -66,7 +70,7 @@ def cobs_decode(data: bytearray):
 
 
 def cobs_self_test():
-    data = struct.pack("<BBBBB", Opcode.COMMAND.value, 0, 10, 16, 0)
+    data = struct.pack("<BBBBB", Opcode.KEY_CHANGE.value, 0, 10, 16, 0)
     print(data)
 
     packed = cobs_encode(data)
@@ -110,24 +114,33 @@ def rb_poll_keys(ser):
             self.row = row
             self.state = state
 
+    q = queue.Queue()
+    def process_keys():
+        event: Toggle = q.get()
+        start_us = event.ts
+        last_us = 0
+
     last_press = time.monotonic()
     last_release = time.monotonic()
 
     log = []
     LOG_FILE = "data.csv"
     try:
+        data = struct.pack("<B", Opcode.GET_STATE.value)
+        packet = cobs_encode(data)
+        ser.write(packet)
         while True:
             while len(data := poll_for_packet(ser)) == 0:
                 print("serial timeout looking for timestamp")
             cmd, curr = struct.unpack("<BQ", data)
-            assert cmd == 5, "Looking for timestamp id"
+            assert cmd == Opcode.TIMESTAMP.value, "Looking for timestamp id"
             while len(data := poll_for_packet(ser)) == 0:
                 print("serial timeout looking for update")
             # print(f"{len(data)}: 0x{data.hex()}")
             cmd, = struct.unpack("<B", data[:1])
-            assert cmd == 2 or cmd == 3,  "Looking for key change id"
-            if cmd == 3:
-                print(f"Full state: 0x{data[1:].hex()}")
+            assert cmd in (Opcode.KEY_CHANGE.value, Opcode.FULL_STATE.value, Opcode.ALT_STATE.value),  "Looking for key change id"
+            if cmd in (Opcode.FULL_STATE.value, Opcode.ALT_STATE.value):
+                print(f"State: [{cmd}] 0x{data[1:].hex()}")
                 continue
             data, = struct.unpack("<B", data[1:2])
             # data, curr= struct.unpack("<BQ", data)  # curr is micro seconds
@@ -219,9 +232,13 @@ def encoder(ser):
 def main():
     parser = argparse.ArgumentParser(prog="Serial tester")
     parser.add_argument("serial", type=str, help="Serial port of device")
+    parser.add_argument("-n", "--alt-enable", action='store_true')
     args = parser.parse_args()
 
     with serial.Serial(args.serial, 2_000_000, timeout=None) as ser:
+        if args.alt_enable:
+            packet = cobs_encode(b"\x05\x01")
+            ser.write(packet)
         rb_poll_keys(ser)
 
 

@@ -9,6 +9,8 @@ pub enum Error {
     OutOfMemory,
     PacketError,
     EmptyBuffer,
+    InvalidId,
+    ReadError(u8),
 }
 
 impl From <u8> for Error {
@@ -25,41 +27,41 @@ impl From <usart::Error> for Error {
     }
 }
 
-#[derive(Debug)]
-#[derive(PartialEq, Eq)]
-pub enum PacketId {
-    Ack = 0,
-    Nak = 1,
-    KeyChange = 2,
-    FullState = 3,
-    AltState = 4,
-    Timestamp = 5, // Temp
-}
+pub const ACK: u8 = 0;
+pub const NAK: u8 = 1;
+
+pub const KEY_CHANGE: u8 = 2;
+pub const GET_STATE: u8 = 3;
+pub const FULL_STATE: u8 = 4;
+pub const ALT_STATE: u8 = 5;
+pub const ALT_ENABLE: u8 = 6;
+
+pub const TIMESTAMP: u8 = 10; // Temp
 
 pub type SerialBuffer = Vec<u8, 32>;
 
 #[trait_variant::make(Send)]  // Needed for public async trait
 pub trait CobsTx {
-    async fn write_cobs(&mut self, id: PacketId, payload: &[u8]) -> Result<(), Error>;
-    async fn send_ack(&mut self, id: PacketId) -> Result<(), Error>;
-    async fn send_nack(&mut self, id: PacketId) -> Result<(), Error>;
+    async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error>;
+    async fn send_ack(&mut self, id: u8) -> Result<(), Error>;
+    async fn send_nack(&mut self, id: u8) -> Result<(), Error>;
 }
 
 impl<'a> CobsTx for UartTx<'a, Async> {
-    async fn send_ack(&mut self, id: PacketId) -> Result<(), Error> {
-        assert_ne!(id, PacketId::Ack);
-        let ack: [u8; 4] = [0x1, 0x2, id as _, 0x0];
+    async fn send_ack(&mut self, id: u8) -> Result<(), Error> {
+        assert_ne!(id, ACK);
+        let ack: [u8; 4] = [0x1, 0x2, id, 0x0];
         self.write(ack.as_slice()).await?;
         Ok(())
     }
-    async fn send_nack(&mut self, id: PacketId) -> Result<(), Error> {
-        assert_ne!(id, PacketId::Ack);
-        let ack: [u8; 4] = [0x3, PacketId::Nak as _, id as _, 0x0];
+    async fn send_nack(&mut self, id: u8) -> Result<(), Error> {
+        assert_ne!(id, ACK);
+        let ack: [u8; 4] = [0x3, NAK, id as _, 0x0];
         self.write(ack.as_slice()).await?;
         Ok(())
     }
-    async fn write_cobs(&mut self, id: PacketId, payload: &[u8]) -> Result<(), Error> {
-        assert_ne!(id, PacketId::Ack);
+    async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error> {
+        assert_ne!(id, ACK);
         let mut packet: SerialBuffer = Vec::from_slice(&[2, id as u8]).unwrap();
         let mut overhead_idx = 0;
         for byte in payload {

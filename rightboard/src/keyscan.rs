@@ -15,10 +15,11 @@ use core::ops::{DerefMut, Range};
 
 use core::hint::cold_path;
 
-use crate::serial::{CobsTx, PacketId};
+use crate::serial::{self, CobsTx};
 use crate::{DisplayAsyncMutex, UartAsyncMutex};
 
-pub static SCAN: Signal<CriticalSectionRawMutex, Scan> = Signal::new();
+pub static ALT_EN: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+pub static REPORT_FULL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 pub static KEYS: StaticCell<Keyscan> = StaticCell::new();
 
 const ROW_LEN: usize = 8;
@@ -35,20 +36,7 @@ enum Error {
 }
 
 type KeyUpdate = Vec<u8, 8>;
-
-// Column x Row
-pub struct Scan {
-    pub state: [u8; 8],
-    pub scan_time: u64,
-}
-impl Scan {
-    pub fn new() -> Self {
-        Self {
-            state: [0; 8],
-            scan_time: 0,
-        }
-    }
-}
+type BoardState = [u8; COL_LEN];
 
 #[embassy_executor::task]
 pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartAsyncMutex, display: &'static DisplayAsyncMutex) {
@@ -58,26 +46,26 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
 
     let mut ticker = Ticker::every(Duration::from_millis(1));
     //let mut ticker = Ticker::every(Duration::from_micros(10));
-    let alt_en = false;
+    let mut alt_en = false;
     loop {
         // If we get more than 8 changes send a full keystate scan
         let start: Instant = Instant::now();
+        alt_en = ALT_EN.try_take().unwrap_or(alt_en);
         let scan = keys.scan(alt_en);
-        match scan {
-            Ok(update) => {
-                if !update.is_empty() {
-                    let mut uart_tx = uart_tx.lock().await;
-                    uart_tx.write_cobs(PacketId::Timestamp, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
-                    uart_tx.write_cobs(PacketId::KeyChange, update.as_slice()).await.unwrap();
-                }
-            },
-            Err(_) => {
-                cold_path();
+
+        if REPORT_FULL.try_take().is_some() || scan.is_err() {
+            cold_path();
+            let mut uart_tx = uart_tx.lock().await;
+            let state_id = if keys.alt_en {serial::ALT_STATE} else {serial::FULL_STATE};
+            uart_tx.write_cobs(serial::TIMESTAMP, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
+            uart_tx.write_cobs(state_id, keys.get_full_state().as_slice()).await.unwrap();
+        } else if let Ok(update) = scan {
+            if !update.is_empty() {
                 let mut uart_tx = uart_tx.lock().await;
-                uart_tx.write_cobs(PacketId::Timestamp, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
-                uart_tx.write_cobs(PacketId::FullState, keys.get_full_state().as_slice()).await.unwrap();
-            },
-        };
+                uart_tx.write_cobs(serial::TIMESTAMP, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
+                uart_tx.write_cobs(serial::KEY_CHANGE, update.as_slice()).await.unwrap();
+            }
+        }
         let elapsed = Instant::now() - start;
         if elapsed > max {
             let mut display = display.lock().await;
@@ -93,8 +81,8 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
 }
 
 pub struct Keyscan<'a> {
-    // While we use the PAC to read/write these pins hold on to these pins so nothing else can use
-    // them
+    // While we use the PAC to read/write these pins hold on to these pins so nothing
+    // else can use them
     _select_pins: [Output<'a>; 3],
     _enable: Output<'a>,
     _input_pins: [Input<'a>; ROW_LEN],
@@ -150,8 +138,8 @@ impl<'a> Keyscan<'a> {
         (pac::GPIOA.idr().read().0 >> 8) & 0xFF
     }
 
-    fn get_full_state(&self) -> [u8; 8] {
-        let mut state: [u8; 8] = [0; 8];
+    fn get_full_state(&self) -> BoardState {
+        let mut state: BoardState = [0; COL_LEN];
         for (i, col) in self.state.iter().enumerate() {
             for (j, val) in col.iter().enumerate() {
                 let val = (*val > FLIP) as u8;
