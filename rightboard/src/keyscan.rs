@@ -3,20 +3,15 @@ use embassy_stm32::gpio::{Input, Output};
 use embassy_stm32::pac;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embedded_graphics::mono_font::ascii::FONT_6X10;
-use embedded_graphics::mono_font::MonoTextStyleBuilder;
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Baseline, Text};
-use heapless::{String, Vec};
+use heapless::Vec;
 use static_cell::StaticCell;
-use core::fmt::Write;
-use core::ops::{DerefMut, Range};
+use core::ops::Range;
 
 use core::hint::cold_path;
 
+use crate::display::{Draw, DISPLAY_DRAW};
 use crate::serial::{self, CobsTx};
-use crate::{DisplayAsyncMutex, UartAsyncMutex};
+use crate::UartAsyncMutex;
 
 pub static ALT_EN: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 pub static REPORT_FULL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
@@ -39,14 +34,14 @@ type KeyUpdate = Vec<u8, 8>;
 type BoardState = [u8; COL_LEN];
 
 #[embassy_executor::task]
-pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartAsyncMutex, display: &'static DisplayAsyncMutex) {
-    let mut str: String<16> = String::new();
-    let text_style = MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::On).build();
+pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartAsyncMutex) {
     let mut max = Duration::default();
 
+    let oled = DISPLAY_DRAW.sender();
     let mut ticker = Ticker::every(Duration::from_millis(1));
     //let mut ticker = Ticker::every(Duration::from_micros(10));
     let mut alt_en = false;
+    let mut prev_alt = alt_en;
     loop {
         // If we get more than 8 changes send a full keystate scan
         let start: Instant = Instant::now();
@@ -67,13 +62,12 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
             }
         }
         let elapsed = Instant::now() - start;
-        if elapsed > max {
-            let mut display = display.lock().await;
-            display.clear(BinaryColor::Off).unwrap();
-            str.clear();
-            core::write!(&mut str, "{}", elapsed.as_micros()).unwrap();
-            Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(display.deref_mut()).unwrap();
-            display.flush().await.unwrap();
+        if keys.alt_en != prev_alt {
+            oled.send(Draw::Numlock(keys.alt_en)).await;
+            prev_alt = keys.alt_en;
+        }
+        if elapsed > max && !oled.is_full() {
+            oled.send(Draw::Timestamp(elapsed.as_micros())).await;
             max = elapsed;
         }
         ticker.next().await;

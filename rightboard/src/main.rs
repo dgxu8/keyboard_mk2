@@ -9,9 +9,7 @@ extern crate panic_halt;
 pub mod keyscan;
 pub mod rotary;
 pub mod serial;
-
-use core::fmt::Write;
-use core::ops::DerefMut;
+pub mod display;
 
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::i2c::I2c;
@@ -19,23 +17,18 @@ use embassy_stm32::mode::Async;
 use embassy_stm32::time::Hertz;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use embedded_graphics::mono_font::ascii::FONT_6X10;
-use embedded_graphics::mono_font::MonoTextStyleBuilder;
 use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::Point;
-use embedded_graphics::text::{Baseline, Text};
 use embedded_graphics::prelude::*;
 use embedded_io::ReadReady;
 
-use heapless::String;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
 use embassy_stm32::usart::{RingBufferedUartRx, Uart, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals, i2c, usart, Config};
-use embassy_time::{Instant, Timer};
-use ssd1306::mode::{BufferedGraphicsModeAsync, DisplayConfigAsync};
-use ssd1306::prelude::{DisplayRotation, I2CInterface};
+use embassy_time::Timer;
+use ssd1306::mode::DisplayConfigAsync;
+use ssd1306::prelude::DisplayRotation;
 use ssd1306::size::DisplaySize128x32;
 use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 use static_cell::StaticCell;
@@ -43,6 +36,7 @@ use static_cell::StaticCell;
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
 use crate::keyscan::{key_scan, Keyscan, ALT_EN, KEYS, REPORT_FULL};
 use crate::serial::{CobsRx, CobsTx, SerialBuffer};
+use crate::display::{display_draw, Draw, DISPLAY_DRAW};
 
 bind_interrupts!(struct UsartIrqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
@@ -53,8 +47,6 @@ bind_interrupts!(struct I2CIrqs {
 });
 
 type UartAsyncMutex = Mutex<CriticalSectionRawMutex, UartTx<'static, Async>>;
-type DisplayAsyncMutex = Mutex<CriticalSectionRawMutex, Ssd1306Async<I2CInterface<I2c<'static, Async>>, DisplaySize128x32, BufferedGraphicsModeAsync<DisplaySize128x32>>>;
-// Ssd1306Async<I2CInterface<I2c<'_, Async>>, DisplaySize128x32, BufferedGraphicsModeAsync<DisplaySize128x32>>
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
@@ -144,16 +136,12 @@ async fn main(spawner: Spawner) -> ! {
     display.clear(BinaryColor::Off).unwrap();
     display.flush().await.unwrap();
 
-    static SSD1306: StaticCell<DisplayAsyncMutex> = StaticCell::new();
-    let display = SSD1306.init(Mutex::new(display));
+    spawner.spawn(display_draw(display)).unwrap();
+    spawner.spawn(key_scan(keys, uart_tx)).unwrap();
 
-    let text_style = MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::On).build();
-
-    spawner.spawn(key_scan(keys, uart_tx, display)).unwrap();
+    let oled = DISPLAY_DRAW.sender();
 
     led1.set_low();
-    let mut elasped: u64 = 0;
-    let mut start: Instant;
     loop {
         Timer::after_millis(5).await;
         if uart_rx.read_ready().unwrap() {
@@ -162,6 +150,7 @@ async fn main(spawner: Spawner) -> ! {
             match buffer[0] {
                 serial::ALT_ENABLE => ALT_EN.signal(buffer[1] == 1),
                 serial::GET_STATE => REPORT_FULL.signal(true),
+                serial::CAPSLOCK => oled.send(Draw::Capslock(buffer[1] == 1)).await,
                 x => {
                     let mut uart_tx = uart_tx.lock().await;
                     uart_tx.send_nack(x).await.unwrap();
@@ -169,27 +158,7 @@ async fn main(spawner: Spawner) -> ! {
             }
         }
         if let Some(rotary) = ENCODER_STATE.try_take() {
-            let mut str: String<16> = String::new();
-
-            start = Instant::now();
-            {
-                let mut display = display.lock().await;
-                display.clear(BinaryColor::Off).unwrap();
-                core::write!(&mut str, "Pos: {}", rotary.pos).unwrap();
-                Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(display.deref_mut()).unwrap();
-                str.clear();
-
-                core::write!(&mut str, "Int: {}", rotary.interrupts).unwrap();
-                Text::with_baseline(&str, Point::new(0, 10), text_style, Baseline::Top).draw(display.deref_mut()).unwrap();
-                str.clear();
-
-                core::write!(&mut str, "{}", elasped).unwrap();
-                Text::with_baseline(&str, Point::new(0, 20), text_style, Baseline::Top).draw(display.deref_mut()).unwrap();
-                display.flush().await.unwrap();
-            }
-            elasped = (Instant::now() - start).as_micros();
-
-            // uart_tx.write(str.as_bytes()).await.unwrap();
+            oled.send(Draw::EncoderState(rotary)).await;
         }
     }
 }
