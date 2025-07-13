@@ -117,7 +117,7 @@ async fn main(spawner: Spawner) -> ! {
     // Rotary Encoder
     let rot_pin_a = ExtiInput::new(p.PB14, p.EXTI14, Pull::None);
     let rot_pin_b = ExtiInput::new(p.PB13, p.EXTI13, Pull::None);
-    spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a)).unwrap();
+    spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a, uart_tx)).unwrap();
 
     const RX_BUF_SIZE: usize = 32;
     let mut rx_buf: [u8; RX_BUF_SIZE] = [0; RX_BUF_SIZE];
