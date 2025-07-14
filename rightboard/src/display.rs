@@ -5,8 +5,8 @@ use embassy_stm32::mode::Async;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::Instant;
 use embedded_graphics::image::ImageRaw;
-use embedded_graphics::mono_font::ascii::FONT_6X10;
-use embedded_graphics::mono_font::MonoTextStyleBuilder;
+use embedded_graphics::mono_font::ascii::{FONT_5X8, FONT_9X18};
+use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder};
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle};
@@ -30,6 +30,7 @@ pub static DISPLAY_DRAW: Channel<CriticalSectionRawMutex, Draw, 5> = Channel::ne
 pub enum Draw {
     Numlock(bool),
     Capslock(bool),
+    Volume(u8),
 
     /* - Development Only - */
     Timestamp(u64),
@@ -56,7 +57,7 @@ const CAPS_Y: u32 = NUM_Y;
 #[embassy_executor::task]
 pub async fn display_draw(mut display: DisplayAsync) {
 
-    let text_style = MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::On).build();
+    let text_style = MonoTextStyleBuilder::new().font(&FONT_5X8).text_color(BinaryColor::On).build();
     let recv = DISPLAY_DRAW.receiver();
 
     const NUM_ICON: MonoImage = raw_to_image!("./numlock.raw", ICON_WIDTH, NUM_X, NUM_Y);
@@ -64,7 +65,7 @@ pub async fn display_draw(mut display: DisplayAsync) {
 
     let mut start: Instant;
     let mut elapsed: u64;
-    let mut str: String<16> = String::new();
+    let mut str: String<8> = String::new();
     loop {
         match recv.receive().await {
             Draw::Numlock(state) => {
@@ -75,12 +76,16 @@ pub async fn display_draw(mut display: DisplayAsync) {
                 start = Instant::now();
                 display.draw_image(&CAPS_ICON, state);
             },
+            Draw::Volume(level) => {
+                start = Instant::now();
+                display.draw_volume(level, Point::new(CAPS_X as i32 - (10 * 4), 8));
+            },
             Draw::Timestamp(time) => {
                 start = Instant::now();
                 str.clear();
                 core::write!(&mut str, "{}", time).unwrap();
 
-                display.clear_box(Point::zero(), Size::new(16*6, 10));
+                display.clear_box(Point::zero(), Size::new(8*5, 10));
                 Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(&mut display).unwrap();
             },
             Draw::EncoderState(state) => {
@@ -88,7 +93,7 @@ pub async fn display_draw(mut display: DisplayAsync) {
                 str.clear();
                 core::write!(&mut str, "{}:{}", state.pos, state.interrupts).unwrap();
 
-                display.clear_box(Point::new(0, 10), Size::new(16*6, 10));
+                display.clear_box(Point::new(0, 10), Size::new(8*5, 10));
                 Text::with_baseline(&str, Point::new(0, 10), text_style, Baseline::Top).draw(&mut display).unwrap();
             }
         }
@@ -97,7 +102,7 @@ pub async fn display_draw(mut display: DisplayAsync) {
         {
             str.clear();
             core::write!(&mut str, "{}", elapsed).unwrap();
-            display.clear_box(Point::new(0, 20), Size::new(16*6, 10));
+            display.clear_box(Point::new(0, 20), Size::new(8*5, 10));
             Text::with_baseline(&str, Point::new(0, 20), text_style, Baseline::Top).draw(&mut display).unwrap();
             display.flush().await.unwrap();
         }
@@ -107,6 +112,7 @@ pub async fn display_draw(mut display: DisplayAsync) {
 #[trait_variant::make(Send)]  // Needed for public async trait
 trait KBHelper {
     fn draw_image(&mut self, image: &MonoImage, draw: bool);
+    fn draw_volume(&mut self, level: u8, pos: Point);
     fn clear_box(&mut self, pos: Point, size: Size);
 }
 
@@ -121,6 +127,13 @@ impl KBHelper for DisplayAsync {
         } else {
             image.bounding_box().into_styled(CLEAR_STYLE).draw(&mut self.color_converted()).unwrap();
         }
+    }
+    fn draw_volume(&mut self, level: u8, pos: Point) {
+        const STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new().font(&FONT_9X18).text_color(BinaryColor::On).build();
+        let mut str: String<4> = String::new();
+        core::write!(&mut str, "{:>3}%", level).unwrap();
+        self.clear_box(pos, Size::new(3*9, 18));
+        Text::with_baseline(&str, pos, STYLE, Baseline::Top).draw(self).unwrap();
     }
     fn clear_box(&mut self, pos: Point, size: Size) {
         Rectangle::new(pos, size)

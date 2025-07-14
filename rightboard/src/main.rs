@@ -151,6 +151,7 @@ async fn main(spawner: Spawner) -> ! {
                 serial::ALT_ENABLE => ALT_EN.signal(buffer[1] == 1),
                 serial::GET_STATE => REPORT_FULL.signal(true),
                 serial::CAPSLOCK => oled.send(Draw::Capslock(buffer[1] == 1)).await,
+                serial::VOLUME => oled.send(Draw::Volume(buffer[1])).await,
                 x => {
                     let mut uart_tx = uart_tx.lock().await;
                     uart_tx.send_nack(x).await.unwrap();

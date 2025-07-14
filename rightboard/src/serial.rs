@@ -37,6 +37,7 @@ pub const ALT_STATE: u8 = 5;
 pub const ALT_ENABLE: u8 = 6;
 pub const CAPSLOCK: u8 = 7;
 pub const ROTARY_CHANGE: u8 = 8;
+pub const VOLUME: u8 = 9;
 
 pub const TIMESTAMP: u8 = 10; // Temp
 

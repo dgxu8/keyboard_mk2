@@ -10,7 +10,8 @@ from threading import Lock
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Log, Static, Switch
+from textual.validation import Number
+from textual.widgets import Button, Log, Static, Switch, Input
 
 
 DELIM = 0  # 1-255
@@ -31,6 +32,8 @@ class Opcode(Enum):
     CAPSLOCK = 7
 
     ROTORY = 8
+
+    VOLUME = 9
 
     TIMESTAMP = 10
 
@@ -179,6 +182,11 @@ class RightboardApp(App):
         data = struct.pack("<BB", map[change.switch.id], change.switch.value)
         self.serial.write_sync(cobs_encode(data))
 
+    async def on_input_submitted(self, event):
+        if event.validation_result:
+            data = struct.pack("<BB", Opcode.VOLUME.value, int(event.value))
+            self.serial.write_sync(cobs_encode(data))
+
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical():
@@ -189,6 +197,10 @@ class RightboardApp(App):
                 with Horizontal():
                     yield Static("Capslock: ", classes="label")
                     yield Switch(animate=False, id="capslock")
+                yield Input(
+                    placeholder="100",
+                    validators=[Number(minimum=0, maximum=100)],
+                )
             yield Log()
 
     def on_ready(self) -> None:
