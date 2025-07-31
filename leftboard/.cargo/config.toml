@@ -1,0 +1,5 @@
+[target.thumbv7em-none-eabi]
+runner = "bash flash.sh"
+
+[build]
+target = "thumbv7em-none-eabi"
