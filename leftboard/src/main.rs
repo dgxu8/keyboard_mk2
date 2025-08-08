@@ -70,6 +70,16 @@ async fn main(_spawner: Spawner) {
     defmt_serial::defmt_serial(UART.init(uart));
     defmt::info!("Starting");
 
+    {
+        let optr = embassy_stm32::pac::FLASH.optr().read();
+        if !optr.n_boot0() || !optr.n_boot1() || !optr.n_swboot0() {
+            defmt::debug!("Option bits: {}, {}, {}. Correcting...", optr.n_boot0(), optr.n_boot1(), optr.n_swboot0());
+            set_boot_option(true, true, true).await;
+        } else {
+            defmt::debug!("Option bits correct");
+        }
+    }
+
     let driver = Driver::new(p.USB, USBIrqs, p.PA12, p.PA11);
     let mut usb_cfg = embassy_usb::Config::new(0xc0de, 0xcafe);
     usb_cfg.manufacturer = Some("Rustboard");
@@ -148,6 +158,54 @@ async fn main(_spawner: Spawner) {
     join4(usb_fut, echo_fut, blink_fut, out_fut).await;
 }
 
+async fn set_boot_option(n_boot0: bool, n_boot1: bool, n_swboot0: bool) -> ! {
+    const FLASH_KEY1: u32 = 0x4567_0123;
+    const FLASH_KEY2: u32 = 0xCDEF_89AB;
+    const OPT_KEY1: u32 =  0x0819_2A3B;
+    const OPT_KEY2: u32 =  0x4C5D_6E7F;
+    while embassy_stm32::pac::FLASH.sr().read().bsy() {
+        Timer::after_millis(1).await;
+    }
+    // Unlock FLASH
+    embassy_stm32::pac::FLASH.keyr().write_value(FLASH_KEY1);
+    embassy_stm32::pac::FLASH.keyr().write_value(FLASH_KEY2);
+    // Unlock OPT Registers
+    embassy_stm32::pac::FLASH.optkeyr().write_value(OPT_KEY1);
+    embassy_stm32::pac::FLASH.optkeyr().write_value(OPT_KEY2);
+
+    let cr = embassy_stm32::pac::FLASH.cr().read();
+    defmt::info!("cr: {}, {}", cr.lock(), cr.optlock());
+
+    // Write Registers
+    let mut optr = embassy_stm32::pac::FLASH.optr().read();
+    optr.set_n_boot0(n_boot0);  // Set boot0 bit to 1
+    optr.set_n_boot1(n_boot1);  // Set boot1 bit to 1
+    optr.set_n_swboot0(n_swboot0); // Switch to using boot0 bit for determining whether or not we
+                                   // boot into the bootloadr
+    embassy_stm32::pac::FLASH.optr().write_value(optr);
+
+    // Commit option registers update
+    let mut cr = embassy_stm32::pac::FLASH.cr().read();
+    cr.set_optstrt(true);
+    embassy_stm32::pac::FLASH.cr().write_value(cr);
+
+    while embassy_stm32::pac::FLASH.sr().read().bsy() {
+        Timer::after_millis(1).await;
+    }
+
+    // Reload option bytes, required to actually commit the option bytes for some reason
+    let mut cr = embassy_stm32::pac::FLASH.cr().read();
+    cr.set_obl_launch(true);
+    embassy_stm32::pac::FLASH.cr().write_value(cr);
+
+    while embassy_stm32::pac::FLASH.cr().read().obl_launch() {
+        Timer::after_millis(1).await;
+    }
+
+    // Force reset incase we don't reboot
+    cortex_m::peripheral::SCB::sys_reset();
+}
+
 async fn echo<'a, 'd, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d, T>>, led: &mut Output<'a>) {
     let mut buf = [0; 64];
     loop {
@@ -157,8 +215,10 @@ async fn echo<'a, 'd, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d, T
                 class.write_packet(data).await.unwrap();
                 led.toggle();
             }
-            Err(_) => {
-                return;
+            Err(e) => {
+                defmt::info!("echo disconnected: {:?}", e);
+                // For now, go to bootloader
+                set_boot_option(false, true, false).await;
             }
         }
     }
