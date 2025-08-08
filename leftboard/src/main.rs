@@ -6,23 +6,35 @@ extern crate panic_halt;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use defmt;
+use defmt_serial as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join4;
+use embassy_stm32::mode::Async;
 use embassy_stm32::rcc::mux::Clk48sel;
 use embassy_stm32::rcc::{Hsi48Config, Pll, PllMul, PllPreDiv, PllRDiv, PllSource, Sysclk};
+use embassy_stm32::usart::Uart;
 use embassy_stm32::usb::{Driver, Instance};
-use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
+use embassy_stm32::{bind_interrupts, peripherals, usart, usb, Config};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::{self, CdcAcmClass};
 use embassy_usb::class::hid::{self, HidReaderWriter, ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Handler};
+use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
 bind_interrupts!(struct USBIrqs {
     USB => usb::InterruptHandler<peripherals::USB>;
 });
+
+bind_interrupts!(struct UsartIrqs {
+    USART2 => usart::InterruptHandler<peripherals::USART2>;
+
+});
+
+static UART: StaticCell<Uart<'_, Async>> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -44,6 +56,19 @@ async fn main(_spawner: Spawner) {
 
     let mut led0 = Output::new(p.PB0, Level::Low, Speed::Low);
     let mut led1 = Output::new(p.PB1, Level::Low, Speed::Low);
+
+    let mut uart_cfg = usart::Config::default();
+    uart_cfg.baudrate = 2_000_000;
+    let uart = Uart::new(
+        p.USART2,
+        p.PA3, p.PA2,  // RX, TX
+        UsartIrqs,
+        p.DMA1_CH7, p.DMA1_CH6, // TX, RX
+        uart_cfg
+    ).unwrap();
+
+    defmt_serial::defmt_serial(UART.init(uart));
+    defmt::info!("Starting");
 
     let driver = Driver::new(p.USB, USBIrqs, p.PA12, p.PA11);
     let mut usb_cfg = embassy_usb::Config::new(0xc0de, 0xcafe);
@@ -142,22 +167,22 @@ async fn echo<'a, 'd, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d, T
 struct MyRequestHandler {}
 
 impl RequestHandler for MyRequestHandler {
-    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
-        let (_, _) = (id, buf);
+    fn get_report(&mut self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
+        defmt::info!("get_report id:{:?}", id);
         None
     }
 
-    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
-        let (_, _) = (id, data);
+    fn set_report(&mut self, id: ReportId, _data: &[u8]) -> OutResponse {
+        defmt::info!("set_report id:{:?}", id);
         OutResponse::Accepted
     }
 
     fn set_idle_ms(&mut self, id: Option<ReportId>, _dur: u32) {
-        let _ = id;
+        defmt::info!("set_idle_ms id:{:?}", id);
     }
 
     fn get_idle_ms(&mut self, id: Option<ReportId>) -> Option<u32> {
-        let _ = id;
+        defmt::info!("get_idle_ms id:{:?}", id);
         None
     }
 }
@@ -175,19 +200,23 @@ impl MyDeviceHandler {
 }
 
 impl Handler for MyDeviceHandler {
-    fn enabled(&mut self, _enabled: bool) {
+    fn enabled(&mut self, enabled: bool) {
         self.configured.store(false, Ordering::Relaxed);
+        defmt::info!("enabled: {:?}", enabled);
     }
 
     fn reset(&mut self) {
         self.configured.store(false, Ordering::Relaxed);
+        defmt::info!("reset");
     }
 
-    fn addressed(&mut self, _addr: u8) {
+    fn addressed(&mut self, addr: u8) {
         self.configured.store(false, Ordering::Relaxed);
+        defmt::info!("addressed: {:?}", addr);
     }
 
     fn configured(&mut self, configured: bool) {
         self.configured.store(configured, Ordering::Relaxed);
+        defmt::info!("configured: {:?}", configured);
     }
 }

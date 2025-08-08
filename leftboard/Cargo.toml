@@ -23,8 +23,10 @@ rotary-encoder-hal = { version = "0.6.0", features = ["table-decoder"] }
 embassy-futures = "0.1.1"
 ssd1306 = { version = "0.10.0", features = ["async"] }
 embedded-graphics = { version = "0.8.1", features = ["fixed_point"] }
-embassy-usb = "0.4.0"
+embassy-usb = { version = "0.4.0", features = ["defmt"] }
 usbd-hid = "0.8.1"
+defmt = "1.0.1"
+defmt-serial = "0.10.0"
 
 [[bin]]
 name = "leftboard"
