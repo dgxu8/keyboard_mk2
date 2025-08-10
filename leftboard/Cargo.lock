@@ -750,6 +750,7 @@ dependencies = [
  "heapless",
  "panic-halt",
  "rotary-encoder-hal",
+ "serde",
  "ssd1306",
  "static_cell",
  "trait-variant",

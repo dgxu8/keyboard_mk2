@@ -23,7 +23,8 @@ use embassy_usb::class::hid::{self, HidReaderWriter, ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Handler};
 use static_cell::StaticCell;
-use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
+use usbd_hid::descriptor::*;
+use serde::ser::{Serialize, Serializer, SerializeTuple};
 
 bind_interrupts!(struct USBIrqs {
     USB => usb::InterruptHandler<peripherals::USB>;
@@ -35,6 +36,36 @@ bind_interrupts!(struct UsartIrqs {
 });
 
 static UART: StaticCell<Uart<'_, Async>> = StaticCell::new();
+
+#[gen_hid_descriptor(
+    (collection = APPLICATION, usage_page = GENERIC_DESKTOP, usage = KEYBOARD) = {
+        (usage_page = KEYBOARD, usage_min = 0xE0, usage_max = 0xE7) = {
+            #[packed_bits 8]
+            #[item_settings data,variable,absolute]
+            modifier=input;
+        };
+        (usage_min = 0x00, usage_max = 0xFF) = {
+            #[item_settings constant,variable,absolute]
+            reserved=input;
+        };
+        (usage_page = LEDS, usage_min = 0x01, usage_max = 0x05) = {
+            #[packed_bits 5]
+            #[item_settings data,variable,absolute]
+            leds=output;
+        };
+        (usage_page = KEYBOARD, usage_min = 0x00, usage_max = 0x65) = {
+            #[packed_bits 101]
+            #[item_settings data,variable,absolute]
+            keycodes=input;
+        };
+    }
+)]
+pub struct NKROKeyboardReport {
+    pub modifier: u8,
+    pub reserved: u8,
+    pub leds: u8,
+    pub keycodes: [u8; 13],
+}
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -106,13 +137,13 @@ async fn main(_spawner: Spawner) {
 
     let mut class = CdcAcmClass::new(&mut builder, &mut state, 64);
     let hid_cfg = embassy_usb::class::hid::Config {
-        report_descriptor: KeyboardReport::desc(),
+        report_descriptor: NKROKeyboardReport::desc(),
         request_handler: None,
         poll_ms: 50,
-        max_packet_size: 8,
+        max_packet_size: 15,
     };
 
-    let h = HidReaderWriter::<_, 1, 8>::new(&mut builder, &mut hid_state, hid_cfg);
+    let h = HidReaderWriter::<_, 1, 15>::new(&mut builder, &mut hid_state, hid_cfg);
 
     let mut usb = builder.build();
     let usb_fut = usb.run();
@@ -126,29 +157,34 @@ async fn main(_spawner: Spawner) {
         }
     };
     let blink_fut = async {
+        let mut keycode = [0; 13];
         loop {
             led1.toggle();
-            Timer::after_millis(500).await;
-            let report = KeyboardReport {
-                keycodes: [4, 0, 0, 0, 0, 0],
+            Timer::after_millis(1000).await;
+
+            keycode[10] = 1 << 3;
+            // keycode[10] = 1 << KeyboardUsage::KeyboardAa as u8;
+            let report = NKROKeyboardReport {
+                keycodes: keycode,
                 leds: 0,
                 modifier: 0,
                 reserved: 0,
             };
             match writer.write_serialize(&report).await {
                 Ok(()) => {},
-                Err(_) => {}
+                Err(e) => defmt::info!("Error sending key {:?}", e),
             };
             Timer::after_millis(100).await;
-            let report = KeyboardReport {
-                keycodes: [0, 0, 0, 0, 0, 0],
+            keycode[10] = 0;
+            let report = NKROKeyboardReport {
+                keycodes: keycode,
                 leds: 0,
                 modifier: 0,
                 reserved: 0,
             };
             match writer.write_serialize(&report).await {
                 Ok(()) => {},
-                Err(_) => {}
+                Err(e) => defmt::info!("Error no sending key {:?}", e),
             };
         }
     };

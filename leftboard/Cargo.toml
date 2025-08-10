@@ -27,6 +27,7 @@ embassy-usb = { version = "0.4.0", features = ["defmt"] }
 usbd-hid = "0.8.1"
 defmt = "1.0.1"
 defmt-serial = "0.10.0"
+serde = { version = "1.0.219", default-features = false }
 
 [[bin]]
 name = "leftboard"
