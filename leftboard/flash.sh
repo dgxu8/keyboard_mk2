@@ -1,6 +1,5 @@
 #!/bin/bash
 
-TARGET=${1}
 STM32_DFU="0483:df11"
 KEYBOARD_ID="c0de:cafe"
 
@@ -33,13 +32,12 @@ set -ep
 
 cargo objcopy --bin leftboard --release -- -O binary target/leftboard.bin
 STM32_Programmer_CLI -c port=USB1 -w target/leftboard.bin 0x08000000 -s
-echo $TARGET
 
 set +e
-fixup_options &
+# fixup_options &
+echo ""
 
-set -e
-socat /dev/ttyUSB0,b2000000,raw,echo=0 STDOUT | defmt-print -e $TARGET
+./attach.sh
 
 # STM32_Programmer_CLI -l usb
 # TODO: add a way to parse the USB with the list command above
