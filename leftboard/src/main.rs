@@ -8,6 +8,7 @@ mod usb_com;
 mod usb;
 mod logger;
 
+use cortex_m::asm;
 use defmt;
 
 use embassy_executor::Spawner;
@@ -34,6 +35,9 @@ bind_interrupts!(struct UsartIrqs {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // Validate boot options before doing anything else
+    check_boot_option();
+
     let mut config = Config::default();
     config.rcc.sys = Sysclk::PLL1_R;
     config.rcc.hsi = true;
@@ -64,14 +68,6 @@ async fn main(spawner: Spawner) {
     ).unwrap();
     uart.write(b"Starting\r\n").await.unwrap();
 
-    {
-        let optr = embassy_stm32::pac::FLASH.optr().read();
-        if !optr.n_boot0() || !optr.n_boot1() || !optr.n_swboot0() {
-            // defmt::debug!("Option bits: {}, {}, {}. Correcting...", optr.n_boot0(), optr.n_boot1(), optr.n_swboot0());
-            set_boot_option(true, true, true).await;
-        }
-    }
-
     let driver = Driver::new(p.USB, USBIrqs, p.PA12, p.PA11);
     let (mut usb, h, defmt_com, rb_com) = init_usb(driver);
     let usb_usages = usb.buffer_usage();
@@ -80,7 +76,11 @@ async fn main(spawner: Spawner) {
 
     let (reader, mut writer) = h.split();
 
-    spawner.spawn(logger::run(defmt_com)).unwrap();
+    let (defmt_out, receiver) = defmt_com.split();
+
+    spawner.spawn(logger::run(defmt_out)).unwrap();
+    spawner.spawn(usb_com::run(receiver)).unwrap();
+
     let blink_fut = async {
         let mut keycode = [0; 13];
         loop {
@@ -121,13 +121,21 @@ async fn main(spawner: Spawner) {
     join::join3(usb_fut, blink_fut, out_fut).await;
 }
 
-async fn set_boot_option(n_boot0: bool, n_boot1: bool, n_swboot0: bool) -> ! {
+#[inline(always)]
+fn check_boot_option() {
+    let optr = embassy_stm32::pac::FLASH.optr().read();
+    if !optr.n_boot0() || !optr.n_boot1() || !optr.n_swboot0() {
+        set_boot_option(true, true, true);
+    }
+}
+
+fn set_boot_option(n_boot0: bool, n_boot1: bool, n_swboot0: bool) -> ! {
     const FLASH_KEY1: u32 = 0x4567_0123;
     const FLASH_KEY2: u32 = 0xCDEF_89AB;
     const OPT_KEY1: u32 =  0x0819_2A3B;
     const OPT_KEY2: u32 =  0x4C5D_6E7F;
     while embassy_stm32::pac::FLASH.sr().read().bsy() {
-        Timer::after_millis(1).await;
+        asm::nop();
     }
     // Unlock FLASH
     embassy_stm32::pac::FLASH.keyr().write_value(FLASH_KEY1);
@@ -136,8 +144,8 @@ async fn set_boot_option(n_boot0: bool, n_boot1: bool, n_swboot0: bool) -> ! {
     embassy_stm32::pac::FLASH.optkeyr().write_value(OPT_KEY1);
     embassy_stm32::pac::FLASH.optkeyr().write_value(OPT_KEY2);
 
-    let cr = embassy_stm32::pac::FLASH.cr().read();
-    defmt::info!("cr: {}, {}", cr.lock(), cr.optlock());
+    // let cr = embassy_stm32::pac::FLASH.cr().read();
+    // defmt::info!("cr: {}, {}", cr.lock(), cr.optlock());
 
     // Write Registers
     let mut optr = embassy_stm32::pac::FLASH.optr().read();
@@ -153,7 +161,7 @@ async fn set_boot_option(n_boot0: bool, n_boot1: bool, n_swboot0: bool) -> ! {
     embassy_stm32::pac::FLASH.cr().write_value(cr);
 
     while embassy_stm32::pac::FLASH.sr().read().bsy() {
-        Timer::after_millis(1).await;
+        asm::nop();
     }
 
     // Reload option bytes, required to actually commit the option bytes for some reason
@@ -162,7 +170,7 @@ async fn set_boot_option(n_boot0: bool, n_boot1: bool, n_swboot0: bool) -> ! {
     embassy_stm32::pac::FLASH.cr().write_value(cr);
 
     while embassy_stm32::pac::FLASH.cr().read().obl_launch() {
-        Timer::after_millis(1).await;
+        asm::nop();
     }
 
     // Force reset incase we don't reboot

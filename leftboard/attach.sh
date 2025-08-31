@@ -18,5 +18,5 @@ done
 
 sleep 0.5
 
-echo -en '\x01' > $TTY
+echo -en '\x00' > $TTY
 defmt-print --show-skipped-frames -e $ELF serial --path $TTY

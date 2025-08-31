@@ -2,6 +2,8 @@
 
 STM32_DFU="0483:df11"
 KEYBOARD_ID="c0de:cafe"
+COM_TTY="/dev/ttyACM0"
+OPTION_UPDATE=""
 
 poll_for_id() {
     local id=$1
@@ -23,8 +25,13 @@ fixup_options() {
 
 lsusb -d $STM32_DFU
 if [ $? -ne 0 ]; then
-    OPTION_UPDATE=1
-    sudo usbreset $KEYBOARD_ID > /dev/null
+    if [ ! -c $COM_TTY ]; then
+        echo "No device found to update"
+        exit 1
+    fi
+    OPTION_UPDATE="set"
+    echo -en  '\x01' > $COM_TTY
+    # sudo usbreset $KEYBOARD_ID > /dev/null
     poll_for_id $STM32_DFU
 fi
 
@@ -34,7 +41,9 @@ cargo objcopy --bin leftboard --release -- -O binary target/leftboard.bin
 STM32_Programmer_CLI -c port=USB1 -w target/leftboard.bin 0x08000000 -s
 
 set +e
-# fixup_options &
+if [ -n $OPTION_UPDATE ]; then
+    fixup_options &
+fi
 echo ""
 
 ./attach.sh

@@ -1,16 +1,17 @@
 use defmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use embassy_stm32::{mode::Async, peripherals::USB, usart::Uart, usb::Driver};
+use embassy_stm32::{peripherals::USB, usb::Driver};
 use embassy_futures::block_on;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pipe::Pipe};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pipe::Pipe, signal::Signal};
 use embassy_time::Timer;
-use embassy_usb::class::cdc_acm::CdcAcmClass;
+use embassy_usb::class::cdc_acm::Sender;
 
 use crate::usb::UsbSerial;
 
 
 pub static BUFFER: Pipe<CriticalSectionRawMutex, 256> = Pipe::new();
+pub static OUTPUT_DEFMT: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 
 const START_SIZE: usize = 1;
 const END_SIZE: usize = 2;
@@ -57,17 +58,18 @@ unsafe impl defmt::Logger for GlobalLogger {
 }
 
 #[embassy_executor::task]
-pub async fn run(mut class: CdcAcmClass<'static, Driver<'static, USB>>) {
+pub async fn run(mut class: Sender<'static, Driver<'static, USB>>) {
     let mut buf = [0; 256];
     loop {
         class.wait_connection().await;
         // So we don't start send log data to early wait for byte
-        class.read_packet(&mut buf).await.unwrap();
+        // class.read_packet(&mut buf).await.unwrap();
+        OUTPUT_DEFMT.wait().await;
         // Delay a bit so we don't send the data
         Timer::after_millis(100).await;
         loop {
             let len = BUFFER.read(&mut buf).await;
-            class.write_all(&buf[..len]).await.unwrap();
+            class.write_packets(&buf[..len]).await.unwrap();
         }
     }
 }

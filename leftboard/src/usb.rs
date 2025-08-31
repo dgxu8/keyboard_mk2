@@ -1,7 +1,7 @@
 use core::{cmp, sync::atomic::{AtomicBool, Ordering}};
 
 use embassy_stm32::{peripherals::USB, usb::Driver};
-use embassy_usb::{class::{cdc_acm::{self, CdcAcmClass}, hid::{self, HidReaderWriter, ReportId, RequestHandler}}, control::OutResponse, driver::EndpointError, Builder, Handler, UsbDevice};
+use embassy_usb::{class::{cdc_acm::{self, CdcAcmClass, Sender}, hid::{self, HidReaderWriter, ReportId, RequestHandler}}, control::OutResponse, driver::{self, EndpointError}, Builder, Handler, UsbDevice};
 use static_cell::StaticCell;
 use usbd_hid::{descriptor::*};
 use serde::ser::{Serialize, Serializer, SerializeTuple};
@@ -93,11 +93,11 @@ pub fn init_usb(driver: Driver<'static, USB>) -> (UsbDevice<'static, Driver<'sta
 }
 
 pub trait UsbSerial {
-    async fn write_all(&mut self, payload: &[u8]) -> Result<(), EndpointError>;
+    async fn write_packets(&mut self, payload: &[u8]) -> Result<(), EndpointError>;
 }
 
-impl<'a> UsbSerial for CdcAcmClass<'a, Driver<'a, USB>> {
-    async fn write_all(&mut self, payload: &[u8]) -> Result<(), EndpointError> {
+impl<'a, D: driver::Driver<'a>> UsbSerial for Sender<'a, D> {
+    async fn write_packets(&mut self, payload: &[u8]) -> Result<(), EndpointError> {
         let mut buf = payload;
         let mut len = cmp::min(buf.len(), self.max_packet_size() as usize);
 
