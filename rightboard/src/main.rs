@@ -8,7 +8,6 @@ extern crate panic_halt;
 
 pub mod keyscan;
 pub mod rotary;
-pub mod serial;
 pub mod display;
 
 use embassy_stm32::exti::ExtiInput;
@@ -33,9 +32,10 @@ use ssd1306::size::DisplaySize128x32;
 use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 use static_cell::StaticCell;
 
+use util::cobs_uart::{self, cobs_config, CobsRx, CobsTx, SerialBuffer};
+
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
 use crate::keyscan::{key_scan, Keyscan, ALT_EN, KEYS, REPORT_FULL};
-use crate::serial::{CobsRx, CobsTx, SerialBuffer};
 use crate::display::{display_draw, Draw, DISPLAY_DRAW};
 
 bind_interrupts!(struct UsartIrqs {
@@ -95,14 +95,12 @@ async fn main(spawner: Spawner) -> ! {
     // data_bits: DataBits::DataBits8,
     // stop_bits: StopBits::STOP1,
     // parity: Parity::ParityNone,
-    let mut uart_cfg = usart::Config::default();
-    uart_cfg.baudrate = 2_000_000;
     let uart = Uart::new(
         p.USART2,
         p.PA3, p.PA2,  // RX, TX
         UsartIrqs,
         p.DMA1_CH7, p.DMA1_CH6,  // TX, RX
-        uart_cfg,
+        cobs_config(),
     ).unwrap();
     let (uart_tx, uart_rx) = uart.split();
     led0.set_high();
@@ -150,10 +148,10 @@ async fn main(spawner: Spawner) -> ! {
             let mut buffer = SerialBuffer::new();
             uart_rx.read_cobs(&mut buffer).await.unwrap();
             match buffer[0] {
-                serial::ALT_ENABLE => ALT_EN.signal(buffer[1] == 1),
-                serial::GET_STATE => REPORT_FULL.signal(true),
-                serial::CAPSLOCK => oled.send(Draw::Capslock(buffer[1] == 1)).await,
-                serial::VOLUME => oled.send(Draw::Volume(buffer[1])).await,
+                cobs_uart::ALT_ENABLE => ALT_EN.signal(buffer[1] == 1),
+                cobs_uart::GET_STATE => REPORT_FULL.signal(true),
+                cobs_uart::CAPSLOCK => oled.send(Draw::Capslock(buffer[1] == 1)).await,
+                cobs_uart::VOLUME => oled.send(Draw::Volume(buffer[1])).await,
                 x => {
                     let mut uart_tx = uart_tx.lock().await;
                     uart_tx.send_nack(x).await.unwrap();

@@ -9,8 +9,9 @@ use core::ops::Range;
 
 use core::hint::cold_path;
 
+use util::cobs_uart::{self, CobsTx};
+
 use crate::display::{Draw, DISPLAY_DRAW};
-use crate::serial::{self, CobsTx};
 use crate::UartAsyncMutex;
 
 pub static ALT_EN: Signal<CriticalSectionRawMutex, bool> = Signal::new();
@@ -51,14 +52,14 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
         if REPORT_FULL.try_take().is_some() || scan.is_err() {
             cold_path();
             let mut uart_tx = uart_tx.lock().await;
-            let state_id = if keys.alt_en {serial::ALT_STATE} else {serial::FULL_STATE};
-            uart_tx.write_cobs(serial::TIMESTAMP, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
+            let state_id = if keys.alt_en {cobs_uart::ALT_STATE} else {cobs_uart::FULL_STATE};
+            uart_tx.write_cobs(cobs_uart::TIMESTAMP, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
             uart_tx.write_cobs(state_id, keys.get_full_state().as_slice()).await.unwrap();
         } else if let Ok(update) = scan {
             if !update.is_empty() {
                 let mut uart_tx = uart_tx.lock().await;
-                uart_tx.write_cobs(serial::TIMESTAMP, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
-                uart_tx.write_cobs(serial::KEY_CHANGE, update.as_slice()).await.unwrap();
+                uart_tx.write_cobs(cobs_uart::TIMESTAMP, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
+                uart_tx.write_cobs(cobs_uart::KEY_CHANGE, update.as_slice()).await.unwrap();
             }
         }
         let elapsed = Instant::now() - start;

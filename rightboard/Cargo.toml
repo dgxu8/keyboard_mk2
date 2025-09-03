@@ -24,6 +24,7 @@ portable-atomic = { version = "1", features = ["unsafe-assume-single-core"] }
 trait-variant = "0.1.2"
 rotary-encoder-hal = { version = "0.6.0", features = ["table-decoder"] }
 ssd1306 = { version = "0.10.0", features = ["async"] }
+util = { version = "0.1.0", path = "../util" }
 
 [[bin]]
 name = "rightboard"
