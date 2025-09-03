@@ -1,0 +1,10 @@
+[package]
+name = "util"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+embassy-stm32 = "0.4.0"
+embassy-time = "0.5.0"
+heapless = "0.9.1"
+trait-variant = "0.1.2"
