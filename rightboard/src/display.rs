@@ -1,6 +1,6 @@
 use core::fmt::Write;
 
-use embassy_stm32::i2c::I2c;
+use embassy_stm32::i2c::{I2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::Instant;
@@ -38,7 +38,7 @@ pub enum Draw {
 }
 
 type MonoImage = Image<'static, ImageRaw<'static, BinaryColor>>;
-type DisplayAsync = Ssd1306Async<I2CInterface<I2c<'static, Async>>, DisplaySize128x32, BufferedGraphicsModeAsync<DisplaySize128x32>>;
+type DisplayAsync = Ssd1306Async<I2CInterface<I2c<'static, Async, Master>>, DisplaySize128x32, BufferedGraphicsModeAsync<DisplaySize128x32>>;
 
 const WIDTH: u32 = 128;
 const HEIGHT: u32 = 32;

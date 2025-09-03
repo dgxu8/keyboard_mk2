@@ -129,7 +129,9 @@ async fn main(spawner: Spawner) -> ! {
     uart_rx.start_uart();
 
     // The datasheet says that the max frequency is 1MHz but 8MHz seems to work
-    let i2c = I2c::new(p.I2C2, p.PB10, p.PB11, I2CIrqs, p.DMA1_CH4, p.DMA1_CH5, Hertz::mhz(8), Default::default());
+    let mut i2c_cfg = i2c::Config::default();
+    i2c_cfg.frequency = Hertz::mhz(8);
+    let i2c = I2c::new(p.I2C2, p.PB10, p.PB11, I2CIrqs, p.DMA1_CH4, p.DMA1_CH5, i2c_cfg);
     let i2c_intf = I2CDisplayInterface::new(i2c);
     let mut display = Ssd1306Async::new(i2c_intf, DisplaySize128x32, DisplayRotation::Rotate0).into_buffered_graphics_mode();
     display.init().await.unwrap();
