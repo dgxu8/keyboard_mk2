@@ -1,7 +1,8 @@
 use embassy_stm32::gpio::Pull;
 use embassy_stm32::mode::Async;
 use embassy_stm32::usart::{self, Config, Parity, RingBufferedUartRx, UartTx};
-use embassy_time::{with_timeout, Duration};
+use embedded_io::ReadReady;
+use embedded_io_async::Write;
 use heapless::Vec;
 
 pub fn cobs_config() -> Config {
@@ -69,13 +70,13 @@ impl<'a> CobsTx for UartTx<'a, Async> {
     async fn send_ack(&mut self, id: u8) -> Result<(), Error> {
         assert_ne!(id, ACK);
         let ack: [u8; 4] = [0x1, 0x2, id, 0x0];
-        self.write(ack.as_slice()).await?;
+        self.write_all(ack.as_slice()).await?;
         Ok(())
     }
     async fn send_nack(&mut self, id: u8) -> Result<(), Error> {
         assert_ne!(id, ACK);
         let ack: [u8; 4] = [0x3, NAK, id as _, 0x0];
-        self.write(ack.as_slice()).await?;
+        self.write_all(ack.as_slice()).await?;
         Ok(())
     }
     async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error> {
@@ -91,7 +92,7 @@ impl<'a> CobsTx for UartTx<'a, Async> {
             packet[overhead_idx] += 1;
         }
         packet.push(0)?;
-        self.write(packet.as_slice()).await?;
+        self.write_all(packet.as_slice()).await?;
         Ok(())
     }
 }
@@ -104,10 +105,8 @@ pub trait CobsRx {
 impl<'a> CobsRx for RingBufferedUartRx<'a> {
     async fn read_cobs(&mut self, payload: &mut SerialBuffer) -> Result<(), Error> {
         let mut byte: [u8; 1] = [0; 1];
-        if let Err(_) = with_timeout(Duration::from_millis(100), self.read(&mut byte)).await {
-            return Err(Error::EmptyBuffer);
-        }
 
+        self.read(&mut byte).await?;
         let mut overflow_idx = byte[0];
         loop {
             self.read(&mut byte).await?;
@@ -131,5 +130,20 @@ impl<'a> CobsRx for RingBufferedUartRx<'a> {
             // TODO: Maybe send ACK?
             Ok(())
         }
+    }
+}
+
+#[trait_variant::make(Send)]  // Needed for public async trait
+pub trait Clearable {
+    async fn clear(&mut self) -> Result<(), Error>;
+}
+
+impl<'a> Clearable for RingBufferedUartRx<'a> {
+    async fn clear(&mut self) -> Result<(), Error> {
+        let mut byte: [u8; 1] = [0; 1];
+        while self.read_ready().unwrap_or(false) {
+            self.read(&mut byte).await?;
+        }
+        Ok(())
     }
 }

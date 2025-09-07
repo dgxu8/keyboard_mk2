@@ -565,6 +565,8 @@ version = "0.1.0"
 dependencies = [
  "embassy-stm32",
  "embassy-time",
+ "embedded-io",
+ "embedded-io-async",
  "heapless 0.9.1",
  "trait-variant",
 ]
