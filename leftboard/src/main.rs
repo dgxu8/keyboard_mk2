@@ -7,6 +7,7 @@ extern crate panic_halt;
 mod usb_com;
 mod usb;
 mod logger;
+mod serial;
 
 use cortex_m::asm;
 use defmt;
@@ -17,11 +18,13 @@ use embassy_stm32::rcc::mux::Clk48sel;
 use embassy_stm32::rcc::{Hsi48Config, Pll, PllMul, PllPreDiv, PllRDiv, PllSource, Sysclk};
 use embassy_stm32::usart::Uart;
 use embassy_stm32::usb::Driver;
-use embassy_stm32::{bind_interrupts, peripherals, usart, Config};
+use embassy_stm32::{bind_interrupts, peripherals, Config};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_time::Timer;
+use util::cobs_uart::cobs_config;
 
 use crate::usb::{init_usb, MyRequestHandler, NKROKeyboardReport};
+use crate::usb_com::CoprocCtrl;
 
 bind_interrupts!(struct USBIrqs {
     USB => embassy_stm32::usb::InterruptHandler<peripherals::USB>;
@@ -55,31 +58,37 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(config);
 
     let _led0 = Output::new(p.PB0, Level::Low, Speed::Low);
+    // embassy_stm32::pac::GPIOB.bsrr().write(|w| w.set_bs(0, true));
     let mut led1 = Output::new(p.PB1, Level::Low, Speed::Low);
 
-    let mut uart_cfg = usart::Config::default();
-    uart_cfg.baudrate = 2_000_000;
-    let mut uart = Uart::new(
+    let mut rb_ctrl = CoprocCtrl {
+        boot0: Output::new(p.PA14, Level::Low, Speed::Low),
+        n_rst: Output::new(p.PA15, Level::Low, Speed::Low),
+    };
+
+    let uart = Uart::new(
         p.USART2,
         p.PA3, p.PA2,  // RX, TX
         UsartIrqs,
         p.DMA1_CH7, p.DMA1_CH6, // TX, RX
-        uart_cfg
+        cobs_config()
     ).unwrap();
-    uart.write(b"Starting\r\n").await.unwrap();
 
     let driver = Driver::new(p.USB, USBIrqs, p.PA12, p.PA11);
-    let (mut usb, h, defmt_com, rb_com) = init_usb(driver);
+    let (mut usb, hid, acm0, acm1) = init_usb(driver);
     let usb_usages = usb.buffer_usage();
     defmt::info!("{:?}", usb_usages);
     let usb_fut = usb.run();
 
-    let (reader, mut writer) = h.split();
+    let (reader, mut writer) = hid.split();
+    let (defmt_out, acm0_in) = acm0.split();
 
-    let (defmt_out, receiver) = defmt_com.split();
+    Timer::after_millis(5).await;
+    rb_ctrl.n_rst.set_high();
 
     spawner.spawn(logger::run(defmt_out)).unwrap();
-    spawner.spawn(usb_com::run(receiver)).unwrap();
+    spawner.spawn(usb_com::run(acm0_in, rb_ctrl)).unwrap();
+    spawner.spawn(serial::run(uart, acm1)).unwrap();
 
     let blink_fut = async {
         let mut keycode = [0; 13];

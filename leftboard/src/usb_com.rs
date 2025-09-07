@@ -1,8 +1,10 @@
+use embassy_stm32::gpio::Output;
 use embassy_stm32::{peripherals::USB, usb::Driver};
 use embassy_time::Timer;
 use embassy_usb::{class::cdc_acm::Receiver, driver::EndpointError};
+use embedded_hal::digital::{OutputPin, PinState};
 
-use crate::{logger::OUTPUT_DEFMT, set_boot_option};
+use crate::{logger::OUTPUT_DEFMT, serial::{UartState, UART_STATE}, set_boot_option};
 
 // use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pipe::Pipe};
 // pub static BUFFER: Pipe<CriticalSectionRawMutex, 256> = Pipe::new();
@@ -40,32 +42,52 @@ use crate::{logger::OUTPUT_DEFMT, set_boot_option};
 //     }};
 // }
 
+pub struct CoprocCtrl<'a> {
+    pub boot0: Output<'a>,
+    pub n_rst: Output<'a>,
+}
+
+impl<'a> CoprocCtrl<'a> {
+    pub async fn reset(&mut self, boot0_state: PinState) {
+        self.n_rst.set_low();
+        self.boot0.set_state(boot0_state).unwrap();
+        Timer::after_millis(5).await;
+        self.n_rst.set_high();
+    }
+}
+
 const START_DEFMT: u8 = 0;
-const START_BL: u8 = 1;
+const ENTER_BL: u8 = 1;
 const START_RB_BL: u8 = 2;
-const END_RB_BL: u8 = 3;
+const EXIT_RB_BL: u8 = 3;
 const UPDATE_KEYMAP: u8 = 4;
 
-async fn handle_data<'a>(id: u8) {
+async fn handle_data<'a>(id: u8, rb_ctrl: &mut CoprocCtrl<'a>) {
     match id {
         START_DEFMT => OUTPUT_DEFMT.signal(true),
-        START_BL => set_boot_option(false, true, false),
-        START_RB_BL => (),
-        END_RB_BL => (),
+        ENTER_BL => set_boot_option(false, true, false),
+        START_RB_BL => {
+            rb_ctrl.reset(PinState::High).await;
+            UART_STATE.signal(UartState::LoaderBridge);
+        },
+        EXIT_RB_BL => {
+            rb_ctrl.reset(PinState::Low).await;
+            UART_STATE.signal(UartState::Normal);
+        },
         UPDATE_KEYMAP => (),
         _ => (),
     }
 }
 
 #[embassy_executor::task]
-pub async fn run(mut data_in: Receiver<'static, Driver<'static, USB>>) {
+pub async fn run(mut data_in: Receiver<'static, Driver<'static, USB>>, mut rb_ctrl: CoprocCtrl<'static>) {
     loop {
         data_in.wait_connection().await;
 
         loop {
             let mut recv_buf = [0; 1];
             match data_in.read_packet(&mut recv_buf).await {
-                Ok(_id) => handle_data(recv_buf[0]).await,
+                Ok(_id) => handle_data(recv_buf[0], &mut rb_ctrl).await,
                 Err(e) => {
                     if e == EndpointError::Disabled {
                         critical_section::with(|_| cortex_m::peripheral::SCB::sys_reset());

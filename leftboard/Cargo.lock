@@ -731,6 +731,7 @@ dependencies = [
  "static_cell",
  "trait-variant",
  "usbd-hid",
+ "util",
 ]
 
 [[package]]
@@ -1158,6 +1159,18 @@ dependencies = [
  "serde",
  "syn 1.0.109",
  "usbd-hid-descriptors",
+]
+
+[[package]]
+name = "util"
+version = "0.1.0"
+dependencies = [
+ "embassy-stm32",
+ "embassy-time",
+ "embedded-io",
+ "embedded-io-async",
+ "heapless 0.9.1",
+ "trait-variant",
 ]
 
 [[package]]
