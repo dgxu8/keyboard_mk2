@@ -10,6 +10,7 @@ pub mod keyscan;
 pub mod rotary;
 pub mod display;
 
+use embassy_futures::select::{select, Either};
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::mode::Async;
@@ -18,21 +19,19 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
-use embedded_io::ReadReady;
 
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
 use embassy_stm32::usart::{RingBufferedUartRx, Uart, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals, i2c, usart, Config};
-use embassy_time::Timer;
 use ssd1306::mode::DisplayConfigAsync;
 use ssd1306::prelude::DisplayRotation;
 use ssd1306::size::DisplaySize128x32;
 use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 use static_cell::StaticCell;
 
-use util::cobs_uart::{self, cobs_config, CobsRx, CobsTx, SerialBuffer};
+use util::cobs_uart::{self, cobs_config, CobsBuffer, CobsRx, CobsTx};
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
 use crate::keyscan::{key_scan, Keyscan, ALT_EN, KEYS, REPORT_FULL};
@@ -142,24 +141,28 @@ async fn main(spawner: Spawner) -> ! {
     let oled = DISPLAY_DRAW.sender();
 
     led1.set_low();
+    let mut recv_buf = CobsBuffer::new();
     loop {
-        Timer::after_millis(5).await;
-        if uart_rx.read_ready().unwrap() {
-            let mut buffer = SerialBuffer::new();
-            uart_rx.read_cobs(&mut buffer).await.unwrap();
-            match buffer[0] {
-                cobs_uart::ALT_ENABLE => ALT_EN.signal(buffer[1] == 1),
-                cobs_uart::GET_STATE => REPORT_FULL.signal(true),
-                cobs_uart::CAPSLOCK => oled.send(Draw::Capslock(buffer[1] == 1)).await,
-                cobs_uart::VOLUME => oled.send(Draw::Volume(buffer[1])).await,
-                x => {
-                    let mut uart_tx = uart_tx.lock().await;
-                    uart_tx.send_nack(x).await.unwrap();
-                },
-            }
-        }
-        if let Some(rotary) = ENCODER_STATE.try_take() {
-            oled.send(Draw::EncoderState(rotary)).await;
+        match select(uart_rx.read_cobs(&mut recv_buf), ENCODER_STATE.wait()).await {
+            Either::First(rslt) => 'recv: {
+                if rslt.is_err() {
+                    break 'recv;
+                }
+                match recv_buf[0] {
+                    cobs_uart::ALT_ENABLE => ALT_EN.signal(recv_buf[1] == 1),
+                    cobs_uart::GET_STATE => REPORT_FULL.signal(true),
+                    cobs_uart::CAPSLOCK => oled.send(Draw::Capslock(recv_buf[1] == 1)).await,
+                    cobs_uart::VOLUME => oled.send(Draw::Volume(recv_buf[1])).await,
+                    x => {
+                        let mut uart_tx = uart_tx.lock().await;
+                        uart_tx.send_nack(x).await.unwrap();
+                    },
+                }
+                recv_buf.reset();
+            },
+            Either::Second(rotary) => {
+                oled.send(Draw::EncoderState(rotary)).await;
+            },
         }
     }
 }

@@ -1,3 +1,5 @@
+use core::ops::{Deref, DerefMut};
+
 use embassy_stm32::gpio::Pull;
 use embassy_stm32::mode::Async;
 use embassy_stm32::usart::{self, Config, Parity, RingBufferedUartRx, UartTx};
@@ -59,6 +61,39 @@ pub const TIMESTAMP: u8 = 10; // Temp
 
 pub type SerialBuffer = Vec<u8, 32>;
 
+pub struct CobsBuffer {
+    buf: SerialBuffer,
+    ovfl_idx: usize,
+}
+
+impl CobsBuffer {
+    pub fn new() -> CobsBuffer {
+        CobsBuffer {
+            buf: SerialBuffer::new(),
+            ovfl_idx: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.buf.clear();
+        self.ovfl_idx = 0;
+    }
+}
+
+impl Deref for CobsBuffer {
+    type Target = SerialBuffer;
+
+    fn deref(&self) -> &Self::Target {
+        &self.buf
+    }
+}
+
+impl DerefMut for CobsBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.buf
+    }
+}
+
 #[trait_variant::make(Send)]  // Needed for public async trait
 pub trait CobsTx {
     async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error>;
@@ -99,37 +134,37 @@ impl<'a> CobsTx for UartTx<'a, Async> {
 
 #[trait_variant::make(Send)]  // Needed for public async trait
 pub trait CobsRx {
-    async fn read_cobs(&mut self, payload: &mut SerialBuffer) -> Result<(), Error>;
+    async fn read_cobs<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<(), Error>;
 }
 
 impl<'a> CobsRx for RingBufferedUartRx<'a> {
-    async fn read_cobs(&mut self, payload: &mut SerialBuffer) -> Result<(), Error> {
+    async fn read_cobs<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<(), Error> {
         let mut byte: [u8; 1] = [0; 1];
 
-        self.read(&mut byte).await?;
-        let mut overflow_idx = byte[0];
+        while rslt.ovfl_idx == 0 {
+            self.read(&mut byte).await?;
+            rslt.ovfl_idx = byte[0] as _;
+        }
+
         loop {
             self.read(&mut byte).await?;
+            rslt.ovfl_idx -= 1;
             if byte[0] == 0 {
                 break;
             }
 
-            overflow_idx -= 1;
-            if overflow_idx == 0 {
-                overflow_idx = byte[0];
-                payload.push(0)?;
+            if rslt.ovfl_idx == 0 {
+                rslt.ovfl_idx = byte[0] as _;
+                rslt.push(0)?;
             } else {
-                payload.push(byte[0])?;
+                rslt.push(byte[0])?;
             }
         }
-
-        if overflow_idx != 1 || payload.len() < 1 {
-            // TODO: Maybe send NACK?
-            Err(Error::PacketError)
-        } else {
-            // TODO: Maybe send ACK?
-            Ok(())
+        if rslt.ovfl_idx != 0 || rslt.len() < 1 {
+            rslt.reset();
+            return Err(Error::PacketError);
         }
+        Ok(())
     }
 }
 

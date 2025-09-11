@@ -1,11 +1,9 @@
 use embassy_futures::{join::join, select::{select, Either}};
 use embassy_stm32::{mode::Async, peripherals::USB, usart::{RingBufferedUartRx, Uart, UartTx}, usb::Driver};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender};
-use embedded_io::ReadReady;
 use embedded_io_async::Write;
-use util::cobs_uart::{bl_config, cobs_config, Clearable, CobsRx, SerialBuffer};
+use util::cobs_uart::{bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, SerialBuffer};
 
 #[derive(PartialEq, Eq)]
 pub enum UartState {
@@ -25,35 +23,42 @@ pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Dri
     let (mut usb_tx, mut usb_rx) = class.split();
 
     uart_rx.start_uart();
+
+    let mut recv_buf = CobsBuffer::new();
+
     loop {
-        Timer::after_millis(5).await;
-        if UART_STATE.try_take() == Some(UartState::LoaderBridge){
-            defmt::info!("Switching device to bootloader");
-            uart_rx.clear().await.unwrap();
-            uart_rx.set_config(&bl_config()).unwrap();
-            rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
-            uart_rx.set_config(&cobs_config()).unwrap();
-            uart_rx.clear().await.unwrap();
-        }
-        while uart_rx.read_ready().unwrap_or(false) {
-            handle_cobs(&mut uart_rx).await;
+        match select(uart_rx.read_cobs(&mut recv_buf), UART_STATE.wait()).await {
+            Either::First(rslt) => {
+                if let Err(_) = rslt {
+                    defmt::warn!("Got cobs read error");
+                } else {
+                    handle_cobs(&recv_buf);
+                    recv_buf.reset();
+                }
+            },
+            Either::Second(state) => {
+                if state == UartState::LoaderBridge {
+                    defmt::info!("Switching device to bootloader");
+                    uart_rx.clear().await.unwrap();
+                    uart_rx.set_config(&bl_config()).unwrap();
+                    rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
+                    uart_rx.set_config(&cobs_config()).unwrap();
+                    uart_rx.clear().await.unwrap();
+                    recv_buf.reset();
+                }
+            }
         }
     }
 }
 
 #[inline(always)]
-async fn handle_cobs<'a>(uart_rx: &mut RingBufferedUartRx<'a>) {
-    let mut buffer = SerialBuffer::new();
-    match uart_rx.read_cobs(&mut buffer).await {
-        Ok(_) => (),
-        Err(_) => return,
-    }
-    match buffer[0] {
+fn handle_cobs(payload: &SerialBuffer) {
+    match payload[0] {
         _ => {
-            if buffer.len() == 1 {
-                defmt::info!("[{}]", buffer[0]);
+            if payload.len() == 1 {
+                defmt::info!("[{}]", payload[0]);
             } else {
-                defmt::info!("[{}] {}", buffer[0], buffer[1..buffer.len()]);
+                defmt::info!("[{}] {}", payload[0], payload[1..payload.len()]);
             }
         }
     }
