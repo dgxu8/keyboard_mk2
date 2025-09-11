@@ -58,20 +58,31 @@ impl<'a> CoprocCtrl<'a> {
 
 const START_DEFMT: u8 = 0;
 const ENTER_BL: u8 = 1;
-const START_RB_BL: u8 = 2;
-const EXIT_RB_BL: u8 = 3;
-const UPDATE_KEYMAP: u8 = 4;
+
+const START_BL_BRIDGE: u8 = 2;
+const END_BL_BRIDGE: u8 = 3;
+
+const START_BRIDGE: u8 = 4;
+const END_BRIDGE: u8 = 5;
+
+const UPDATE_KEYMAP: u8 = 6;
 
 async fn handle_data<'a>(id: u8, rb_ctrl: &mut CoprocCtrl<'a>) {
     match id {
         START_DEFMT => OUTPUT_DEFMT.signal(true),
         ENTER_BL => set_boot_option(false, true, false),
-        START_RB_BL => {
+        START_BL_BRIDGE => {
             rb_ctrl.reset(PinState::High).await;
             UART_STATE.signal(UartState::LoaderBridge);
         },
-        EXIT_RB_BL => {
+        END_BL_BRIDGE => {
             rb_ctrl.reset(PinState::Low).await;
+            UART_STATE.signal(UartState::Normal);
+        },
+        START_BRIDGE => {
+            UART_STATE.signal(UartState::Bridge);
+        },
+        END_BRIDGE => {
             UART_STATE.signal(UartState::Normal);
         },
         UPDATE_KEYMAP => (),

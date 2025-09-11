@@ -9,6 +9,7 @@ use util::cobs_uart::{bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, Ser
 pub enum UartState {
     Normal,
     LoaderBridge,
+    Bridge,
 }
 
 pub static UART_STATE: Signal<CriticalSectionRawMutex, UartState> = Signal::new();
@@ -43,6 +44,12 @@ pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Dri
                     uart_rx.set_config(&bl_config()).unwrap();
                     rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
                     uart_rx.set_config(&cobs_config()).unwrap();
+                    uart_rx.clear().await.unwrap();
+                    recv_buf.reset();
+                } else if state == UartState::Bridge {
+                    defmt::info!("Setting up bridge to rightboard");
+                    uart_rx.clear().await.unwrap();
+                    rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
                     uart_rx.clear().await.unwrap();
                     recv_buf.reset();
                 }
