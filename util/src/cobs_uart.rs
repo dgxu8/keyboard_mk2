@@ -21,7 +21,7 @@ pub fn bl_config() -> Config {
     config
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     UsartError(usart::Error),
     OutOfMemory,
@@ -57,7 +57,8 @@ pub const CAPSLOCK: u8 = 7;
 pub const ROTARY_CHANGE: u8 = 8;
 pub const VOLUME: u8 = 9;
 
-pub const TIMESTAMP: u8 = 10; // Temp
+pub const TIMESTAMP: u8 = 64; // Temp
+pub const DEFMT_MSG: u8 = 128;
 
 pub type SerialBuffer = Vec<u8, 32>;
 

@@ -3,7 +3,7 @@ use embassy_stm32::{mode::Async, peripherals::USB, usart::{RingBufferedUartRx, U
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender};
 use embedded_io_async::Write;
-use util::cobs_uart::{bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, SerialBuffer};
+use util::cobs_uart::{self, bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, SerialBuffer};
 
 #[derive(PartialEq, Eq)]
 pub enum UartState {
@@ -30,10 +30,14 @@ pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Dri
     loop {
         match select(uart_rx.read_cobs(&mut recv_buf), UART_STATE.wait()).await {
             Either::First(rslt) => {
-                if let Err(_) = rslt {
-                    defmt::warn!("Got cobs read error");
+                if let Err(e) = rslt {
+                    match e {
+                        cobs_uart::Error::PacketError => defmt::warn!("Got cobs packet error"),
+                        cobs_uart::Error::UsartError(e) => defmt::warn!("Usart error: {:?}", e as u32),
+                        _ => defmt::warn!("Got unknown packet error"),
+                    }
                 } else {
-                    handle_cobs(&recv_buf);
+                    handle_cobs(&mut recv_buf, &mut usb_tx).await;
                     recv_buf.reset();
                 }
             },
@@ -59,8 +63,11 @@ pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Dri
 }
 
 #[inline(always)]
-fn handle_cobs(payload: &SerialBuffer) {
+async fn handle_cobs<'a>(payload: &mut SerialBuffer, uart_tx: &mut Sender<'a, Driver<'a, USB>>) {
     match payload[0] {
+        cobs_uart::DEFMT_MSG => {
+            uart_tx.write_packet(&payload[1..]).await.unwrap();
+        },
         _ => {
             if payload.len() == 1 {
                 defmt::info!("[{}]", payload[0]);

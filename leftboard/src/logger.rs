@@ -1,61 +1,14 @@
 use defmt;
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use embassy_stm32::{peripherals::USB, usb::Driver};
-use embassy_futures::block_on;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pipe::Pipe, signal::Signal};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::Sender;
 
+use util::logger::BUFFER;
+
 use crate::usb::UsbSerial;
 
-
-pub static BUFFER: Pipe<CriticalSectionRawMutex, 256> = Pipe::new();
 pub static OUTPUT_DEFMT: Signal<CriticalSectionRawMutex, bool> = Signal::new();
-
-const START_SIZE: usize = 1;
-const END_SIZE: usize = 2;
-static TAKEN: AtomicBool = AtomicBool::new(false);
-static mut RESTORE_STATE: critical_section::RestoreState = critical_section::RestoreState::invalid();
-static mut ENCODER: defmt::Encoder = defmt::Encoder::new();
-
-
-#[defmt::global_logger]
-struct GlobalLogger;
-
-#[allow(static_mut_refs)]
-unsafe impl defmt::Logger for GlobalLogger {
-    fn acquire() {
-        let restore = unsafe { critical_section::acquire() };
-        if TAKEN.load(Ordering::Relaxed) {
-            panic!("Bad");
-        }
-        TAKEN.store(true, Ordering::Relaxed);
-
-        unsafe { RESTORE_STATE = restore; }
-        if BUFFER.free_capacity() >= START_SIZE {
-            unsafe { ENCODER.start_frame(|x| { block_on(BUFFER.write_all(x)) }) }
-        }
-    }
-    unsafe fn release() {
-        if BUFFER.free_capacity() >= END_SIZE {
-            ENCODER.end_frame(|x| { block_on(BUFFER.write_all(x)) });
-        }
-        TAKEN.store(false, Ordering::Relaxed);
-        let restore = RESTORE_STATE;
-        critical_section::release(restore);
-    }
-
-    unsafe fn write(bytes: &[u8]) {
-        if BUFFER.free_capacity() >= bytes.len() {
-            ENCODER.write(bytes, |x| { block_on(BUFFER.write_all(x)) });
-        }
-    }
-
-    unsafe fn flush() {
-        // This never seems to be called
-    }
-}
 
 #[embassy_executor::task]
 pub async fn run(mut class: Sender<'static, Driver<'static, USB>>) {
@@ -67,6 +20,7 @@ pub async fn run(mut class: Sender<'static, Driver<'static, USB>>) {
         OUTPUT_DEFMT.wait().await;
         // Delay a bit so we don't send the data
         Timer::after_millis(100).await;
+        defmt::info!("Buffer size: {}", BUFFER.len());
         loop {
             let len = BUFFER.read(&mut buf).await;
             class.write_packets(&buf[..len]).await.unwrap();

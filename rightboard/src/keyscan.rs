@@ -60,6 +60,7 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
                 let mut uart_tx = uart_tx.lock().await;
                 uart_tx.write_cobs(cobs_uart::TIMESTAMP, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
                 uart_tx.write_cobs(cobs_uart::KEY_CHANGE, update.as_slice()).await.unwrap();
+                defmt::info!("Got update: {}", start.as_millis());
             }
         }
         let elapsed = Instant::now() - start;

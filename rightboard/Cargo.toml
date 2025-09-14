@@ -25,6 +25,7 @@ trait-variant = "0.1.2"
 rotary-encoder-hal = { version = "0.6.0", features = ["table-decoder"] }
 ssd1306 = { version = "0.10.0", features = ["async"] }
 util = { version = "0.1.0", path = "../util" }
+defmt = "1.0.1"
 
 [[bin]]
 name = "rightboard"

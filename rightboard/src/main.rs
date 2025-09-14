@@ -17,6 +17,7 @@ use embassy_stm32::mode::Async;
 use embassy_stm32::time::Hertz;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
+use embassy_time::Timer;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 
@@ -25,6 +26,7 @@ use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
 use embassy_stm32::usart::{RingBufferedUartRx, Uart, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals, i2c, usart, Config};
+use embedded_io_async::Write;
 use ssd1306::mode::DisplayConfigAsync;
 use ssd1306::prelude::DisplayRotation;
 use ssd1306::size::DisplaySize128x32;
@@ -32,6 +34,7 @@ use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 use static_cell::StaticCell;
 
 use util::cobs_uart::{self, cobs_config, CobsBuffer, CobsRx, CobsTx};
+use util::logger::BUFFER;
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
 use crate::keyscan::{key_scan, Keyscan, ALT_EN, KEYS, REPORT_FULL};
@@ -137,6 +140,7 @@ async fn main(spawner: Spawner) -> ! {
 
     spawner.spawn(display_draw(display)).unwrap();
     spawner.spawn(key_scan(keys, uart_tx)).unwrap();
+    spawner.spawn(run_logger(uart_tx)).unwrap();
 
     let oled = DISPLAY_DRAW.sender();
 
@@ -164,5 +168,38 @@ async fn main(spawner: Spawner) -> ! {
                 oled.send(Draw::EncoderState(rotary)).await;
             },
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn run_logger(uart_tx: &'static UartAsyncMutex) {
+    const BUF_LEN: usize = 32;
+    let mut buf = [0; BUF_LEN];
+    buf[1] = cobs_uart::DEFMT_MSG;  // This will never change
+
+    Timer::after_secs(1).await;
+    loop {
+        //  5   |-----| len = 4 + 2
+        //  0 1 2 3 4 5
+        // +-+-+-+-+-+-+
+        // |x|x|d|d|d|0|
+        // +-+-+-+-+-+-+
+        //
+        //      |------| len = 29 + 2
+        //  0 1 2 ...  30
+        // +-+-+-+- -+---+
+        // |x|x|d|   | d |
+        // +-+-+-+- -+---+
+        let len = BUFFER.read(&mut buf[2..BUF_LEN-1]).await + 2;
+        if buf[len-1] == 0 {
+            buf[0] = len as u8 - 1;
+            buf[len-1] = 1;
+        } else {
+            buf[0] = len as u8;
+        }
+        buf[len] = 0;
+
+        let mut uart_tx = uart_tx.lock().await;
+        uart_tx.write_all(&buf[..len+1]).await.unwrap();
     }
 }

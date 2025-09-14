@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 pub mod cobs_uart;
+pub mod logger;
 
 // pub fn add(left: u64, right: u64) -> u64 {
 //     left + right

@@ -35,7 +35,8 @@ class Opcode(Enum):
 
     VOLUME = 9
 
-    TIMESTAMP = 10
+    TIMESTAMP = 64
+    DEFMT_MSG = 128
 
 
 def cobs_encode(data: bytes | bytearray):
