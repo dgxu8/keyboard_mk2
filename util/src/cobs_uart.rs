@@ -21,7 +21,7 @@ pub fn bl_config() -> Config {
     config
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, defmt::Format)]
 pub enum Error {
     UsartError(usart::Error),
     OutOfMemory,
