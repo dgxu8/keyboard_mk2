@@ -18,5 +18,13 @@ done
 
 sleep 0.5
 
-echo -en '\x00' > $TTY
-defmt-print --show-skipped-frames -e $ELF serial --path $TTY
+enable_defmt_out() {
+    sleep 0.2  # Add a delay so socat is up
+    echo -en '\x00' > $TTY
+}
+
+enable_defmt_out &
+
+# This locks out the serial port even though it only reads out of the port
+# defmt-print --show-skipped-frames -e $ELF serial --path $TTY
+socat ${TTY},b115200,raw,echo=0 STDOUT | defmt-print --show-skipped-frames -e $ELF

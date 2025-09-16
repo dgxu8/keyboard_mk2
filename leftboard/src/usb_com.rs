@@ -4,6 +4,7 @@ use embassy_time::Timer;
 use embassy_usb::{class::cdc_acm::Receiver, driver::EndpointError};
 use embedded_hal::digital::{OutputPin, PinState};
 
+use crate::logger::BRIDGE_RB_DEFMT;
 use crate::{logger::OUTPUT_DEFMT, serial::{UartState, UART_STATE}, set_boot_option};
 
 // use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pipe::Pipe};
@@ -65,7 +66,9 @@ const END_BL_BRIDGE: u8 = 3;
 const START_BRIDGE: u8 = 4;
 const END_BRIDGE: u8 = 5;
 
-const UPDATE_KEYMAP: u8 = 6;
+const START_DEFMT_BRIDGE: u8 = 6;
+
+const UPDATE_KEYMAP: u8 = 7;
 
 async fn handle_data<'a>(id: u8, rb_ctrl: &mut CoprocCtrl<'a>) {
     match id {
@@ -85,6 +88,10 @@ async fn handle_data<'a>(id: u8, rb_ctrl: &mut CoprocCtrl<'a>) {
         END_BRIDGE => {
             UART_STATE.signal(UartState::Normal);
         },
+        START_DEFMT_BRIDGE => {
+            defmt::info!("Starting defmt bridge");
+            BRIDGE_RB_DEFMT.signal(true);
+        },
         UPDATE_KEYMAP => (),
         _ => (),
     }
@@ -92,19 +99,16 @@ async fn handle_data<'a>(id: u8, rb_ctrl: &mut CoprocCtrl<'a>) {
 
 #[embassy_executor::task]
 pub async fn run(mut data_in: Receiver<'static, Driver<'static, USB>>, mut rb_ctrl: CoprocCtrl<'static>) {
+    data_in.wait_connection().await;
     loop {
-        data_in.wait_connection().await;
-
-        loop {
-            let mut recv_buf = [0; 1];
-            match data_in.read_packet(&mut recv_buf).await {
-                Ok(_id) => handle_data(recv_buf[0], &mut rb_ctrl).await,
-                Err(e) => {
-                    if e == EndpointError::Disabled {
-                        critical_section::with(|_| cortex_m::peripheral::SCB::sys_reset());
-                    }
-                },
-            }
+        let mut recv_buf = [0; 1];
+        match data_in.read_packet(&mut recv_buf).await {
+            Ok(_id) => handle_data(recv_buf[0], &mut rb_ctrl).await,
+            Err(e) => {
+                if e == EndpointError::Disabled {
+                    critical_section::with(|_| cortex_m::peripheral::SCB::sys_reset());
+                }
+            },
         }
     }
 }

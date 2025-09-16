@@ -5,7 +5,9 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender};
 use embedded_io_async::Write;
 use util::cobs_uart::{self, bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, SerialBuffer};
 
-#[derive(PartialEq, Eq)]
+use crate::logger::bridge_rb;
+
+#[derive(PartialEq, Eq, defmt::Format)]
 pub enum UartState {
     Normal,
     LoaderBridge,
@@ -17,56 +19,50 @@ pub static UART_STATE: Signal<CriticalSectionRawMutex, UartState> = Signal::new(
 #[embassy_executor::task]
 pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Driver<'static, USB>>) -> ! {
     let mut rx_buf: [u8; 64] = [0; 64];
+
     let (mut uart_tx, uart_rx) = uart.split();
     let mut uart_rx = uart_rx.into_ring_buffered(&mut rx_buf);
 
     class.wait_connection().await;
     let (mut usb_tx, mut usb_rx) = class.split();
-
     uart_rx.start_uart();
-
     let mut recv_buf = CobsBuffer::new();
-
     loop {
         match select(uart_rx.read_cobs(&mut recv_buf), UART_STATE.wait()).await {
-            Either::First(rslt) => {
-                if let Err(e) = rslt {
-                    match e {
-                        cobs_uart::Error::PacketError => defmt::warn!("Got cobs packet error"),
-                        cobs_uart::Error::UsartError(e) => defmt::warn!("Usart error: {:?}", e as u32),
-                        _ => defmt::warn!("Got unknown packet error"),
-                    }
-                } else {
-                    handle_cobs(&mut recv_buf, &mut usb_tx).await;
-                    recv_buf.reset();
-                }
+            Either::First(Ok(_)) => {
+                handle_cobs(&mut recv_buf, &mut usb_tx).await;
+                recv_buf.reset();
             },
-            Either::Second(state) => {
-                if state == UartState::LoaderBridge {
-                    defmt::info!("Switching device to bootloader");
-                    uart_rx.clear().await.unwrap();
-                    uart_rx.set_config(&bl_config()).unwrap();
-                    rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
-                    uart_rx.set_config(&cobs_config()).unwrap();
-                    uart_rx.clear().await.unwrap();
-                    recv_buf.reset();
-                } else if state == UartState::Bridge {
-                    defmt::info!("Setting up bridge to rightboard");
-                    uart_rx.clear().await.unwrap();
-                    rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
-                    uart_rx.clear().await.unwrap();
-                    recv_buf.reset();
-                }
+            Either::First(Err(e)) => {
+                defmt::warn!("Cobs error: {:?}", e);
+            },
+            Either::Second(UartState::Bridge) => {
+                defmt::info!("Setting up bridge to rightboard");
+                uart_rx.clear().await.unwrap();
+                rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
+                uart_rx.clear().await.unwrap();
+                recv_buf.reset();
             }
+            Either::Second(UartState::LoaderBridge) => {
+                defmt::info!("Switching device to bootloader");
+                uart_rx.clear().await.unwrap();
+                uart_rx.set_config(&bl_config()).unwrap();
+                rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
+                uart_rx.set_config(&cobs_config()).unwrap();
+                uart_rx.clear().await.unwrap();
+                recv_buf.reset();
+            }
+            Either::Second(state) => defmt::info!("Got weird state {:?}", state),
         }
     }
 }
 
 #[inline(always)]
-async fn handle_cobs<'a>(payload: &mut SerialBuffer, uart_tx: &mut Sender<'a, Driver<'a, USB>>) {
+async fn handle_cobs<'a>(payload: &mut SerialBuffer, usb_tx: &mut Sender<'a, Driver<'a, USB>>) {
     match payload[0] {
         cobs_uart::DEFMT_MSG => {
-            uart_tx.write_packet(&payload[1..]).await.unwrap();
+            bridge_rb(usb_tx, &payload[1..]).await;
+            // usb_tx.write_packet(&payload[1..]).await.unwrap();
         },
         _ => {
             if payload.len() == 1 {
@@ -80,7 +76,6 @@ async fn handle_cobs<'a>(payload: &mut SerialBuffer, uart_tx: &mut Sender<'a, Dr
 
 async fn rb_bridge<'a, 'b>(uart_tx: &mut UartTx<'a, Async>, uart_rx: &mut RingBufferedUartRx<'a>,
     usb_tx: &mut Sender<'b, Driver<'b, USB>>, usb_rx: &mut Receiver<'b, Driver<'b, USB>>) {
-    usb_rx.wait_connection().await;
 
     let pc_to_rb_fut = async {
         let mut buf = [0; 64];

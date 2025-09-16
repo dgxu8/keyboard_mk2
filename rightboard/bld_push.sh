@@ -31,3 +31,7 @@ STM32_Programmer_CLI -c "port=${PROGRAM_TTY}" -w target/rightboard.bin 0x0800000
 if [ -n $CMD_TTY ]; then
     echo -en "\x03" > $CMD_TTY
 fi
+
+sleep 0.5
+
+./attach.sh
