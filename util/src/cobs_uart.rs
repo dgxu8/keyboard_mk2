@@ -56,6 +56,7 @@ pub const ALT_ENABLE: u8 = 6;
 pub const CAPSLOCK: u8 = 7;
 pub const ROTARY_CHANGE: u8 = 8;
 pub const VOLUME: u8 = 9;
+pub const OLED_MSG: u8 = 10;
 
 pub const TIMESTAMP: u8 = 64; // Temp
 pub const DEFMT_MSG: u8 = 128;

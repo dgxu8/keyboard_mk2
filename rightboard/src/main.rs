@@ -38,7 +38,7 @@ use util::logger::BUFFER;
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
 use crate::keyscan::{key_scan, Keyscan, ALT_EN, KEYS, REPORT_FULL};
-use crate::display::{display_draw, Draw, DISPLAY_DRAW};
+use crate::display::{display_draw, Draw, DISPLAY_DRAW, OLED_STR};
 
 bind_interrupts!(struct UsartIrqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
@@ -157,6 +157,14 @@ async fn main(spawner: Spawner) -> ! {
                     cobs_uart::GET_STATE => REPORT_FULL.signal(true),
                     cobs_uart::CAPSLOCK => oled.send(Draw::Capslock(recv_buf[1] == 1)).await,
                     cobs_uart::VOLUME => oled.send(Draw::Volume(recv_buf[1])).await,
+                    cobs_uart::OLED_MSG => {
+                        if recv_buf.len() - 1 < OLED_STR.free_capacity()  {
+                            OLED_STR.write_all(&recv_buf[1..]).await;
+                            oled.send(Draw::String(10)).await;
+                        } else {
+                            defmt::warn!("Not enough space for str: {}", recv_buf.len() - 1);
+                        }
+                    },
                     x => {
                         let mut uart_tx = uart_tx.lock().await;
                         uart_tx.send_nack(x).await.unwrap();

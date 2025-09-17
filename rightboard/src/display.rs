@@ -2,6 +2,7 @@ use core::fmt::Write;
 
 use embassy_stm32::i2c::{I2c, Master};
 use embassy_stm32::mode::Async;
+use embassy_sync::pipe::Pipe;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::Instant;
 use embedded_graphics::image::ImageRaw;
@@ -26,6 +27,8 @@ macro_rules! raw_to_image {
     };
 }
 
+pub static OLED_STR: Pipe<CriticalSectionRawMutex, 16> = Pipe::new();
+
 pub static DISPLAY_DRAW: Channel<CriticalSectionRawMutex, Draw, 5> = Channel::new();
 pub enum Draw {
     Numlock(bool),
@@ -35,6 +38,7 @@ pub enum Draw {
     /* - Development Only - */
     Timestamp(u64),
     EncoderState(EncoderState),
+    String(u8),  // column offset
 }
 
 type MonoImage = Image<'static, ImageRaw<'static, BinaryColor>>;
@@ -85,7 +89,7 @@ pub async fn display_draw(mut display: DisplayAsync) {
                 str.clear();
                 core::write!(&mut str, "{}", time).unwrap();
 
-                display.clear_box(Point::zero(), Size::new(8*5, 10));
+                display.clear_box(Point::zero(), Size::new(12*5, 10));
                 Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(&mut display).unwrap();
             },
             Draw::EncoderState(state) => {
@@ -93,9 +97,18 @@ pub async fn display_draw(mut display: DisplayAsync) {
                 str.clear();
                 core::write!(&mut str, "{}:{}", state.pos, state.interrupts).unwrap();
 
-                display.clear_box(Point::new(0, 10), Size::new(8*5, 10));
+                display.clear_box(Point::new(0, 10), Size::new(12*5, 10));
                 Text::with_baseline(&str, Point::new(0, 10), text_style, Baseline::Top).draw(&mut display).unwrap();
-            }
+            },
+            Draw::String(col) => {
+                start = Instant::now();
+                let mut buf = [0; 12];
+                if let Ok(len) = OLED_STR.try_read(&mut buf) {
+                    display.clear_box(Point::new(0, col as _), Size::new(12*5, 10));
+                    let s = core::str::from_utf8(&buf[..len]).unwrap();
+                    Text::with_baseline(s, Point::new(0, col as _), text_style, Baseline::Top).draw(&mut display).unwrap();
+                }
+            },
         }
         display.flush().await.unwrap();
         elapsed = (Instant::now() - start).as_micros();
