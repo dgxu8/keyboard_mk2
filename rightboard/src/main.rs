@@ -13,9 +13,7 @@ pub mod display;
 use embassy_futures::select::{select, Either};
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::i2c::I2c;
-use embassy_stm32::mode::Async;
 use embassy_stm32::time::Hertz;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::Timer;
 use embedded_graphics::pixelcolor::BinaryColor;
@@ -24,7 +22,7 @@ use embedded_graphics::prelude::*;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
-use embassy_stm32::usart::{RingBufferedUartRx, Uart, UartTx};
+use embassy_stm32::usart::{RingBufferedUartRx, Uart};
 use embassy_stm32::{bind_interrupts, peripherals, i2c, usart, Config};
 use embedded_io_async::Write;
 use ssd1306::mode::DisplayConfigAsync;
@@ -33,7 +31,7 @@ use ssd1306::size::DisplaySize128x32;
 use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 use static_cell::StaticCell;
 
-use util::cobs_uart::{self, cobs_config, CobsBuffer, CobsRx, CobsTx};
+use util::cobs_uart::{self, cobs_config, CobsBuffer, CobsRx, CobsTx, UartTxMutex};
 use util::logger::BUFFER;
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
@@ -47,8 +45,6 @@ bind_interrupts!(struct UsartIrqs {
 bind_interrupts!(struct I2CIrqs {
     I2C2 => i2c::EventInterruptHandler<peripherals::I2C2>, i2c::ErrorInterruptHandler<peripherals::I2C2>;
 });
-
-type UartAsyncMutex = Mutex<CriticalSectionRawMutex, UartTx<'static, Async>>;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
@@ -109,7 +105,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Keys and led1 are moved into keys_scan's context forever. If we need shared access we need
     // to wrap Keyscan/Output in an embassy_sync::mutex and put that into the StaticCell
-    static UART_TX: StaticCell<UartAsyncMutex> = StaticCell::new();
+    static UART_TX: StaticCell<UartTxMutex> = StaticCell::new();
     let uart_tx = UART_TX.init(Mutex::new(uart_tx));
 
     let keys = KEYS.init(keys);
@@ -180,7 +176,7 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[embassy_executor::task]
-async fn run_logger(uart_tx: &'static UartAsyncMutex) {
+async fn run_logger(uart_tx: &'static UartTxMutex) {
     const BUF_LEN: usize = 32;
     let mut buf = [0; BUF_LEN];
     buf[1] = cobs_uart::DEFMT_MSG;  // This will never change

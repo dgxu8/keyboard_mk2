@@ -9,10 +9,9 @@ use core::ops::Range;
 
 use core::hint::cold_path;
 
-use util::cobs_uart::{self, CobsTx};
+use util::cobs_uart::{self, CobsTx, UartTxMutex};
 
 use crate::display::{Draw, DISPLAY_DRAW};
-use crate::UartAsyncMutex;
 
 pub static ALT_EN: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 pub static REPORT_FULL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
@@ -35,7 +34,7 @@ type KeyUpdate = Vec<u8, 8>;
 type BoardState = [u8; COL_LEN];
 
 #[embassy_executor::task]
-pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartAsyncMutex) {
+pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartTxMutex) {
     let mut max = Duration::default();
 
     let oled = DISPLAY_DRAW.sender();

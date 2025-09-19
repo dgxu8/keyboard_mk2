@@ -1,7 +1,7 @@
 use core::{cmp, sync::atomic::{AtomicBool, Ordering}};
 
 use embassy_stm32::{peripherals::USB, usb::Driver};
-use embassy_usb::{class::{cdc_acm::{self, CdcAcmClass, Sender}, hid::{self, HidReaderWriter, ReportId, RequestHandler}}, control::OutResponse, driver::{self, EndpointError}, Builder, Handler, UsbDevice};
+use embassy_usb::{class::{cdc_acm::{self, CdcAcmClass, Receiver, Sender}, hid::{self, HidReaderWriter, ReportId, RequestHandler}}, control::OutResponse, driver::{self, EndpointError}, Builder, Handler, UsbDevice};
 use static_cell::StaticCell;
 use usbd_hid::{descriptor::*};
 use serde::ser::{Serialize, Serializer, SerializeTuple};
@@ -45,7 +45,9 @@ static CDC_STATE: StaticCell<cdc_acm::State> = StaticCell::new();
 static DEFMT_STATE: StaticCell<cdc_acm::State> = StaticCell::new();
 static HID_STATE: StaticCell<hid::State> = StaticCell::new();
 
-type CdcDev = CdcAcmClass<'static, Driver<'static, USB>>;
+pub type UsbTx<'a> = Sender<'a, Driver<'a, USB>>;
+pub type UsbRx<'a> = Receiver<'a, Driver<'a, USB>>;
+pub type CdcDev = CdcAcmClass<'static, Driver<'static, USB>>;
 type HidRW = HidReaderWriter<'static, Driver<'static, USB>, 1, 15>;
 
 pub fn init_usb(driver: Driver<'static, USB>) -> (UsbDevice<'static, Driver<'static, USB>>, HidRW, CdcDev, CdcDev) {

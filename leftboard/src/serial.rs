@@ -1,11 +1,10 @@
 use embassy_futures::{join::join, select::{select, Either}};
-use embassy_stm32::{mode::Async, peripherals::USB, usart::{RingBufferedUartRx, Uart, UartTx}, usb::Driver};
+use embassy_stm32::{mode::Async, usart::UartRx};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender};
 use embedded_io_async::Write;
-use util::cobs_uart::{self, bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, SerialBuffer};
+use util::cobs_uart::{self, bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, SerialBuffer, SerialRx, UartTxMutex};
 
-use crate::logger::bridge_rb;
+use crate::{logger::bridge_rb, usb::{CdcDev, UsbRx, UsbTx}};
 
 #[derive(PartialEq, Eq, defmt::Format)]
 pub enum UartState {
@@ -17,10 +16,9 @@ pub enum UartState {
 pub static UART_STATE: Signal<CriticalSectionRawMutex, UartState> = Signal::new();
 
 #[embassy_executor::task]
-pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Driver<'static, USB>>) -> ! {
+pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>, mut class: CdcDev) -> ! {
     let mut rx_buf: [u8; 64] = [0; 64];
 
-    let (mut uart_tx, uart_rx) = uart.split();
     let mut uart_rx = uart_rx.into_ring_buffered(&mut rx_buf);
 
     class.wait_connection().await;
@@ -39,7 +37,7 @@ pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Dri
             Either::Second(UartState::Bridge) => {
                 defmt::info!("Setting up bridge to rightboard");
                 uart_rx.clear().await.unwrap();
-                rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
+                rb_bridge(uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
                 uart_rx.clear().await.unwrap();
                 recv_buf.reset();
             }
@@ -47,7 +45,7 @@ pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Dri
                 defmt::info!("Switching device to bootloader");
                 uart_rx.clear().await.unwrap();
                 uart_rx.set_config(&bl_config()).unwrap();
-                rb_bridge(&mut uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
+                rb_bridge(uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
                 uart_rx.set_config(&cobs_config()).unwrap();
                 uart_rx.clear().await.unwrap();
                 recv_buf.reset();
@@ -58,11 +56,10 @@ pub async fn run(uart: Uart<'static, Async>, mut class: CdcAcmClass<'static, Dri
 }
 
 #[inline(always)]
-async fn handle_cobs<'a>(payload: &mut SerialBuffer, usb_tx: &mut Sender<'a, Driver<'a, USB>>) {
+async fn handle_cobs<'a>(payload: &mut SerialBuffer, usb_tx: &mut UsbTx<'a>) {
     match payload[0] {
         cobs_uart::DEFMT_MSG => {
             bridge_rb(usb_tx, &payload[1..]).await;
-            // usb_tx.write_packet(&payload[1..]).await.unwrap();
         },
         _ => {
             if payload.len() == 1 {
@@ -74,13 +71,14 @@ async fn handle_cobs<'a>(payload: &mut SerialBuffer, usb_tx: &mut Sender<'a, Dri
     }
 }
 
-async fn rb_bridge<'a, 'b>(uart_tx: &mut UartTx<'a, Async>, uart_rx: &mut RingBufferedUartRx<'a>,
-    usb_tx: &mut Sender<'b, Driver<'b, USB>>, usb_rx: &mut Receiver<'b, Driver<'b, USB>>) {
+async fn rb_bridge<'a, 'b>(uart_tx: &'a UartTxMutex, uart_rx: &mut SerialRx<'a>,
+    usb_tx: &mut UsbTx<'b>, usb_rx: &mut UsbRx<'b>) {
 
     let pc_to_rb_fut = async {
         let mut buf = [0; 64];
         loop {
             let len = usb_rx.read_packet(&mut buf).await.unwrap();
+            let mut uart_tx = uart_tx.lock().await;
             uart_tx.write_all(&buf[..len]).await.unwrap();
         }
     };

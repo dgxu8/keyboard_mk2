@@ -4,7 +4,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use embassy_time::{with_deadline, Duration, Instant};
 use rotary_encoder_hal::{DefaultPhase, Direction, Rotary};
 
-use crate::{cobs_uart::{self, CobsTx}, UartAsyncMutex};
+use util::cobs_uart::{self, CobsTx, UartTxMutex};
 
 pub static ENCODER_STATE: Signal<CriticalSectionRawMutex, EncoderState> = Signal::new();
 
@@ -16,7 +16,7 @@ pub struct EncoderState {
 type Encoder = Rotary<ExtiInput<'static>, ExtiInput<'static>, DefaultPhase>;
 
 #[embassy_executor::task]
-pub async fn encoder_monitor(pin_a: ExtiInput<'static>, pin_b: ExtiInput<'static>, uart_tx: &'static UartAsyncMutex) {
+pub async fn encoder_monitor(pin_a: ExtiInput<'static>, pin_b: ExtiInput<'static>, uart_tx: &'static UartTxMutex) {
     let mut enc: Encoder = Rotary::new(pin_a, pin_b);
 
     let mut pos: i8 = 0;

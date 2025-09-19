@@ -3,6 +3,8 @@ use core::ops::{Deref, DerefMut};
 use embassy_stm32::gpio::Pull;
 use embassy_stm32::mode::Async;
 use embassy_stm32::usart::{self, Config, Parity, RingBufferedUartRx, UartTx};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embedded_io::ReadReady;
 use embedded_io_async::Write;
 use heapless::Vec;
@@ -62,6 +64,9 @@ pub const TIMESTAMP: u8 = 64; // Temp
 pub const DEFMT_MSG: u8 = 128;
 
 pub type SerialBuffer = Vec<u8, 32>;
+pub type SerialRx<'a> = RingBufferedUartRx<'a>;
+pub type SerialTx<'a> = UartTx<'a, Async>;
+pub type UartTxMutex = Mutex<CriticalSectionRawMutex, SerialTx<'static>>;
 
 pub struct CobsBuffer {
     buf: SerialBuffer,

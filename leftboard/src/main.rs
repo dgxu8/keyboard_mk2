@@ -20,8 +20,10 @@ use embassy_stm32::usart::Uart;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, Config};
 use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_sync::mutex::Mutex;
 use embassy_time::Timer;
-use util::cobs_uart::cobs_config;
+use static_cell::StaticCell;
+use util::cobs_uart::{cobs_config, UartTxMutex};
 
 use crate::usb::{init_usb, MyRequestHandler, NKROKeyboardReport};
 use crate::usb_com::CoprocCtrl;
@@ -73,6 +75,9 @@ async fn main(spawner: Spawner) {
         p.DMA1_CH7, p.DMA1_CH6, // TX, RX
         cobs_config()
     ).unwrap();
+    let (uart_tx, uart_rx) = uart.split();
+    static UART_TX: StaticCell<UartTxMutex> = StaticCell::new();
+    let uart_tx = UART_TX.init(Mutex::new(uart_tx));
 
     let driver = Driver::new(p.USB, USBIrqs, p.PA12, p.PA11);
     let (mut usb, hid, acm0, acm1) = init_usb(driver);
@@ -87,14 +92,14 @@ async fn main(spawner: Spawner) {
     rb_ctrl.n_rst.set_high();
 
     spawner.spawn(logger::run(defmt_out)).unwrap();
-    spawner.spawn(usb_com::run(acm0_in, rb_ctrl)).unwrap();
-    spawner.spawn(serial::run(uart, acm1)).unwrap();
+    spawner.spawn(usb_com::run(acm0_in, uart_tx, rb_ctrl)).unwrap();
+    spawner.spawn(serial::run(uart_tx, uart_rx, acm1)).unwrap();
 
     let blink_fut = async {
         let mut keycode = [0; 13];
         loop {
             led1.toggle();
-            Timer::after_millis(1000).await;
+            Timer::after_millis(1500).await;
 
             keycode[10] = 1 << 3;
             defmt::info!("Key: {}", keycode[10]);

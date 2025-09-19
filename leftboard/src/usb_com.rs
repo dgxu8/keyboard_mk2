@@ -1,10 +1,11 @@
 use embassy_stm32::gpio::Output;
-use embassy_stm32::{peripherals::USB, usb::Driver};
 use embassy_time::Timer;
-use embassy_usb::{class::cdc_acm::Receiver, driver::EndpointError};
+use embassy_usb::driver::EndpointError;
 use embedded_hal::digital::{OutputPin, PinState};
+use util::cobs_uart::{self, CobsTx, UartTxMutex};
 
 use crate::logger::BRIDGE_RB_DEFMT;
+use crate::usb::UsbRx;
 use crate::{logger::OUTPUT_DEFMT, serial::{UartState, UART_STATE}, set_boot_option};
 
 // use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pipe::Pipe};
@@ -70,11 +71,14 @@ const START_DEFMT_BRIDGE: u8 = 6;
 
 const UPDATE_KEYMAP: u8 = 7;
 
-async fn handle_data<'a>(id: u8, rb_ctrl: &mut CoprocCtrl<'a>) {
+async fn handle_data<'a>(id: u8, uart_tx: &'static UartTxMutex, rb_ctrl: &mut CoprocCtrl<'a>) {
     match id {
         START_DEFMT => OUTPUT_DEFMT.signal(true),
         ENTER_BL => set_boot_option(false, true, false),
         START_BL_BRIDGE => {
+            let mut uart_tx = uart_tx.lock().await;
+            uart_tx.write_cobs(cobs_uart::OLED_MSG, "Flashing".as_bytes()).await.unwrap();
+            Timer::after_millis(100).await;
             rb_ctrl.reset(PinState::High).await;
             UART_STATE.signal(UartState::LoaderBridge);
         },
@@ -98,12 +102,12 @@ async fn handle_data<'a>(id: u8, rb_ctrl: &mut CoprocCtrl<'a>) {
 }
 
 #[embassy_executor::task]
-pub async fn run(mut data_in: Receiver<'static, Driver<'static, USB>>, mut rb_ctrl: CoprocCtrl<'static>) {
+pub async fn run(mut data_in: UsbRx<'static>, uart_tx: &'static UartTxMutex, mut rb_ctrl: CoprocCtrl<'static>) {
     data_in.wait_connection().await;
     loop {
         let mut recv_buf = [0; 1];
         match data_in.read_packet(&mut recv_buf).await {
-            Ok(_id) => handle_data(recv_buf[0], &mut rb_ctrl).await,
+            Ok(_len) => handle_data(recv_buf[0], uart_tx, &mut rb_ctrl).await,
             Err(e) => {
                 if e == EndpointError::Disabled {
                     critical_section::with(|_| cortex_m::peripheral::SCB::sys_reset());
