@@ -29,6 +29,7 @@ defmt = { version = "1.0.1" }
 serde = { version = "1.0.219", default-features = false }
 critical-section = "1.2.0"
 util = { version = "0.1.0", path = "../util" }
+strum = { version = "0.27.2", default-features = false, features = ["derive"] }
 
 [[bin]]
 name = "leftboard"

@@ -29,7 +29,9 @@ cargo objcopy --bin rightboard --release -- -O binary target/rightboard.bin
 STM32_Programmer_CLI -c "port=${PROGRAM_TTY}" -w target/rightboard.bin 0x08000000
 
 if [ -n $CMD_TTY ]; then
-    echo -en "\x03" > $CMD_TTY
+    echo -en "\x04" > $CMD_TTY
+else
+    exit 0
 fi
 
 sleep 0.5

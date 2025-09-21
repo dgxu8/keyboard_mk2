@@ -31,7 +31,7 @@ sleep 0.5
 
 enable_defmt_out() {
     sleep 0.2  # Add a delay so socat is up
-    echo -en '\x06' > $CTRL_TTY
+    echo -en '\x05' > $CTRL_TTY
 }
 
 enable_defmt_out &
