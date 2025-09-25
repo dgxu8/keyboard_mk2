@@ -8,6 +8,7 @@ use embassy_sync::mutex::Mutex;
 use embedded_io::ReadReady;
 use embedded_io_async::Write;
 use heapless::Vec;
+use strum::FromRepr;
 
 pub fn cobs_config() -> Config {
     let mut config = Config::default();
@@ -28,8 +29,7 @@ pub enum Error {
     UsartError(usart::Error),
     OutOfMemory,
     PacketError,
-    EmptyBuffer,
-    InvalidId,
+    InvalidId(u8),
     ReadError(u8),
 }
 
@@ -50,18 +50,38 @@ impl From <usart::Error> for Error {
 pub const ACK: u8 = 0;
 pub const NAK: u8 = 1;
 
-pub const KEY_CHANGE: u8 = 2;
-pub const GET_STATE: u8 = 3;
-pub const FULL_STATE: u8 = 4;
-pub const ALT_STATE: u8 = 5;
-pub const ALT_ENABLE: u8 = 6;
-pub const CAPSLOCK: u8 = 7;
-pub const ROTARY_CHANGE: u8 = 8;
-pub const VOLUME: u8 = 9;
-pub const OLED_MSG: u8 = 10;
+#[derive(FromRepr, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum CmdId {
+    Ack = 0,
+    Nak = 1,
 
-pub const TIMESTAMP: u8 = 64; // Temp
-pub const DEFMT_MSG: u8 = 128;
+    GetState = 2, // Expects RspnId::FullState or RspnId::AltState
+
+    // Basically a second layer where the only difference is that we go from arrow keys -> num keys
+    AltEnable = 3,
+    Capslock = 4,
+    Volume = 5,
+    OLEDMsg = 6,
+}
+
+#[derive(FromRepr, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum RspnId {
+    Ack = 0,
+    Nak = 1,
+
+    // Triggered via CmdId::GetState
+    FullState = 2,
+    AltState = 3,
+
+    KeyChange = 4,
+    RotaryChange = 5,
+
+    Timestamp = 64,
+    DefmtMsg = 128,
+}
+
 
 pub type SerialBuffer = Vec<u8, 32>;
 pub type SerialRx<'a> = RingBufferedUartRx<'a>;
@@ -71,6 +91,7 @@ pub type UartTxMutex = Mutex<CriticalSectionRawMutex, SerialTx<'static>>;
 pub struct CobsBuffer {
     buf: SerialBuffer,
     ovfl_idx: usize,
+    opcode: Option<u8>,
 }
 
 impl CobsBuffer {
@@ -78,12 +99,14 @@ impl CobsBuffer {
         CobsBuffer {
             buf: SerialBuffer::new(),
             ovfl_idx: 0,
+            opcode: None,
         }
     }
 
     pub fn reset(&mut self) {
         self.buf.clear();
         self.ovfl_idx = 0;
+        self.opcode = None;
     }
 }
 
@@ -101,11 +124,17 @@ impl DerefMut for CobsBuffer {
     }
 }
 
+#[cfg(not(feature = "coproc"))]
+type WriteType = CmdId;
+#[cfg(feature = "coproc")]
+type WriteType = RspnId;
+
 #[trait_variant::make(Send)]  // Needed for public async trait
 pub trait CobsTx {
     async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error>;
     async fn send_ack(&mut self, id: u8) -> Result<(), Error>;
     async fn send_nack(&mut self, id: u8) -> Result<(), Error>;
+    async fn send(&mut self, id: WriteType, payload: &[u8]) -> Result<(), Error>;
 }
 
 impl<'a> CobsTx for UartTx<'a, Async> {
@@ -123,7 +152,7 @@ impl<'a> CobsTx for UartTx<'a, Async> {
     }
     async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error> {
         assert_ne!(id, ACK);
-        let mut packet: SerialBuffer = Vec::from_slice(&[2, id as u8]).unwrap();
+        let mut packet: SerialBuffer = Vec::from_slice(&[2, id]).unwrap();
         let mut overhead_idx = 0;
         for byte in payload {
             let byte = *byte;
@@ -137,20 +166,42 @@ impl<'a> CobsTx for UartTx<'a, Async> {
         self.write_all(packet.as_slice()).await?;
         Ok(())
     }
+    #[inline(always)]
+    async fn send(&mut self, id: WriteType, payload: &[u8]) -> Result<(), Error> {
+        self.write_cobs(id as u8, payload).await
+    }
 }
+
+#[cfg(not(feature = "coproc"))]
+type ReadType = RspnId;
+#[cfg(feature = "coproc")]
+type ReadType = CmdId;
 
 #[trait_variant::make(Send)]  // Needed for public async trait
 pub trait CobsRx {
-    async fn read_cobs<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<(), Error>;
+    async fn read_cobs<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<u8, Error>;
+    async fn recv<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<ReadType, Error>;
 }
 
 impl<'a> CobsRx for RingBufferedUartRx<'a> {
-    async fn read_cobs<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<(), Error> {
+    #[inline(always)]
+    async fn read_cobs<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<u8, Error> {
         let mut byte: [u8; 1] = [0; 1];
 
         while rslt.ovfl_idx == 0 {
             self.read(&mut byte).await?;
             rslt.ovfl_idx = byte[0] as _;
+        }
+
+        if rslt.opcode == None {
+            self.read(&mut byte).await?;
+            rslt.ovfl_idx -= 1;
+            if rslt.ovfl_idx == 0 {
+                rslt.ovfl_idx = byte[0] as _;
+                rslt.opcode = Some(0);
+            } else {
+                rslt.opcode = Some(byte[0]);
+            }
         }
 
         loop {
@@ -167,11 +218,14 @@ impl<'a> CobsRx for RingBufferedUartRx<'a> {
                 rslt.push(byte[0])?;
             }
         }
-        if rslt.ovfl_idx != 0 || rslt.len() < 1 {
-            rslt.reset();
+        if rslt.ovfl_idx != 0 {
             return Err(Error::PacketError);
         }
-        Ok(())
+        Ok(rslt.opcode.unwrap())
+    }
+    async fn recv<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<ReadType, Error> {
+        let id = self.read_cobs(rslt).await?;
+        ReadType::from_repr(id).ok_or(Error::InvalidId(id))
     }
 }
 

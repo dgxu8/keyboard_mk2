@@ -3,7 +3,7 @@ use embassy_time::Timer;
 use embassy_usb::driver::EndpointError;
 use embedded_hal::digital::{OutputPin, PinState};
 use strum::FromRepr;
-use util::cobs_uart::{self, CobsTx, UartTxMutex};
+use util::cobs_uart::{CmdId, CobsTx, UartTxMutex};
 
 use crate::logger::BRIDGE_RB_DEFMT;
 use crate::usb::UsbRx;
@@ -78,7 +78,7 @@ async fn handle_data<'a>(id: Cmd, uart_tx: &'static UartTxMutex, rb_ctrl: &mut C
         Cmd::Bootloader => set_boot_option(false, true, false),
         Cmd::RbBootloader => {
             let mut uart_tx = uart_tx.lock().await;
-            uart_tx.write_cobs(cobs_uart::OLED_MSG, "Flashing".as_bytes()).await.unwrap();
+            uart_tx.send(CmdId::OLEDMsg, "Flashing".as_bytes()).await.unwrap();
             Timer::after_millis(100).await;
             rb_ctrl.reset(PinState::High).await;
             UART_STATE.signal(UartState::LoaderBridge);

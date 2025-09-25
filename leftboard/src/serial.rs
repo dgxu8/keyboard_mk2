@@ -2,7 +2,7 @@ use embassy_futures::{join::join, select::{select, Either}};
 use embassy_stm32::{mode::Async, usart::UartRx};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embedded_io_async::Write;
-use util::cobs_uart::{self, bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, SerialBuffer, SerialRx, UartTxMutex};
+use util::cobs_uart::{bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, RspnId, SerialRx, UartTxMutex};
 
 use crate::{logger::bridge_rb, usb::{CdcDev, UsbRx, UsbTx}};
 
@@ -26,10 +26,12 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
     uart_rx.start_uart();
     let mut recv_buf = CobsBuffer::new();
     loop {
-        match select(uart_rx.read_cobs(&mut recv_buf), UART_STATE.wait()).await {
-            Either::First(Ok(_)) => {
-                handle_cobs(&mut recv_buf, &mut usb_tx).await;
-                recv_buf.reset();
+        match select(uart_rx.recv(&mut recv_buf), UART_STATE.wait()).await {
+            Either::First(Ok(RspnId::DefmtMsg)) => {
+                bridge_rb(&mut usb_tx, &recv_buf).await;
+            },
+            Either::First(Ok(id)) => {
+                defmt::info!("[{:?}] {:?}", id, recv_buf.as_slice());
             },
             Either::First(Err(e)) => {
                 defmt::warn!("Cobs error: {:?}", e);
@@ -39,7 +41,6 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
                 uart_rx.clear().await.unwrap();
                 rb_bridge(uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
                 uart_rx.clear().await.unwrap();
-                recv_buf.reset();
             }
             Either::Second(UartState::LoaderBridge) => {
                 defmt::info!("Switching device to bootloader");
@@ -48,26 +49,13 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
                 rb_bridge(uart_tx, &mut uart_rx, &mut usb_tx, &mut usb_rx).await;
                 uart_rx.set_config(&cobs_config()).unwrap();
                 uart_rx.clear().await.unwrap();
-                recv_buf.reset();
             }
-            Either::Second(state) => defmt::info!("Got weird state {:?}", state),
+            Either::Second(state) => {
+                defmt::warn!("Got weird state {:?}", state);
+                continue;
+            },
         }
-    }
-}
-
-#[inline(always)]
-async fn handle_cobs<'a>(payload: &mut SerialBuffer, usb_tx: &mut UsbTx<'a>) {
-    match payload[0] {
-        cobs_uart::DEFMT_MSG => {
-            bridge_rb(usb_tx, &payload[1..]).await;
-        },
-        _ => {
-            if payload.len() == 1 {
-                defmt::info!("[{}]", payload[0]);
-            } else {
-                defmt::info!("[{}] {}", payload[0], payload[1..payload.len()]);
-            }
-        }
+        recv_buf.reset();
     }
 }
 

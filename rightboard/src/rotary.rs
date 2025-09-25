@@ -4,7 +4,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use embassy_time::{with_deadline, Duration, Instant};
 use rotary_encoder_hal::{DefaultPhase, Direction, Rotary};
 
-use util::cobs_uart::{self, CobsTx, UartTxMutex};
+use util::cobs_uart::{CobsTx, RspnId, UartTxMutex};
 
 pub static ENCODER_STATE: Signal<CriticalSectionRawMutex, EncoderState> = Signal::new();
 
@@ -31,7 +31,7 @@ pub async fn encoder_monitor(pin_a: ExtiInput<'static>, pin_b: ExtiInput<'static
             timeout = Instant::now() + Duration::from_millis(30);
         } else if let Err(_) = with_deadline(timeout, change_fut).await {
             let mut uart_tx = uart_tx.lock().await;
-            uart_tx.write_cobs(cobs_uart::ROTARY_CHANGE, pos.to_le_bytes().as_slice()).await.unwrap();
+            uart_tx.send(RspnId::RotaryChange, pos.to_le_bytes().as_slice()).await.unwrap();
             pos = 0;
         }
 

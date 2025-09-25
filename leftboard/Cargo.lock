@@ -1225,6 +1225,7 @@ dependencies = [
  "embedded-io",
  "embedded-io-async",
  "heapless 0.9.1",
+ "strum",
  "trait-variant",
 ]
 

@@ -1,7 +1,6 @@
 import argparse
 import serial
 import struct
-import queue
 import time
 from enum import Enum
 from dataclasses import dataclass
@@ -14,7 +13,35 @@ from textual.validation import Number
 from textual.widgets import Button, Log, Static, Switch, Input
 
 
+BRIDGE_CMD = b"\x03"
+END_BRIDGE = b"\x04"
+
 DELIM = 0  # 1-255
+
+
+class CmdId(Enum):
+    ACK = 0
+    NACK = 1
+
+    GET_STATE = 2
+    ALT_ENABLE = 3
+    CAPSLOCK = 4
+    VOLUME = 5
+    OLED_MSG = 6
+
+
+class Rspn(Enum):
+    ACK = 0
+    NACK = 1
+
+    FULL_STATE = 2
+    ALT_STATE = 3
+
+    KEY_CHANGE = 4
+    ROTARY = 5
+
+    TIMESTAMP = 64
+    DEFMT_MSG = 128
 
 
 class Opcode(Enum):
@@ -76,7 +103,7 @@ def cobs_decode(data: bytearray):
     return (buffer, data)
 
 
-def poll_for_packet(ser) -> (Opcode, bytearray):
+def poll_for_packet(ser) -> (Rspn, bytearray):
     packet = bytearray()
     recv = b""
     while recv != b"\x00":
@@ -89,7 +116,7 @@ def poll_for_packet(ser) -> (Opcode, bytearray):
         return b""
     data, remainder = cobs_decode(packet)
     assert len(remainder) == 0, "Some how we got left over data"
-    return Opcode(data[0]), data[1:]
+    return Rspn(data[0]), data[1:]
 
 
 def handle_change(changes, key_state):
@@ -172,20 +199,20 @@ class RightboardApp(App):
 
     async def on_button_pressed(self, event):
         if event.button.id == "get_state":
-            data = struct.pack("<B", Opcode.GET_STATE.value)
+            data = struct.pack("<B", CmdId.GET_STATE.value)
             self.serial.write_sync(cobs_encode(data))
 
     async def on_switch_changed(self, change):
         map = {
-            "numlock": Opcode.ALT_ENABLE.value,
-            "capslock": Opcode.CAPSLOCK.value,
+            "numlock": CmdId.ALT_ENABLE.value,
+            "capslock": CmdId.CAPSLOCK.value,
         }
         data = struct.pack("<BB", map[change.switch.id], change.switch.value)
         self.serial.write_sync(cobs_encode(data))
 
     async def on_input_submitted(self, event):
         if event.validation_result:
-            data = struct.pack("<BB", Opcode.VOLUME.value, int(event.value))
+            data = struct.pack("<BB", CmdId.VOLUME.value, int(event.value))
             self.serial.write_sync(cobs_encode(data))
 
     def compose(self) -> ComposeResult:
@@ -215,20 +242,20 @@ class RightboardApp(App):
         while True:
             id, payload = poll_for_packet(self.serial)
             match id:
-                case Opcode.KEY_CHANGE:
+                case Rspn.KEY_CHANGE:
                     keys = struct.unpack(f"<{len(payload)}B", payload)
                     changes = [KeyState(key, ts) for key in list(keys)]
                     msg = "|".join(handle_change(changes, states))
                     # msg = "|".join([str(state) for state in changes])
-                case Opcode.FULL_STATE:
+                case Rspn.FULL_STATE:
                     msg = f"{id.name}: {int(payload.hex(), 16):064b}"
-                case Opcode.ALT_STATE:
+                case Rspn.ALT_STATE:
                     msg = f"{id.name}: {int(payload.hex(), 16):064b}"
-                case Opcode.TIMESTAMP:
+                case Rspn.TIMESTAMP:
                     ts, = struct.unpack("<Q", payload)
                     msg = f"{ts/1_000}ms"
                     continue
-                case Opcode.ROTORY:
+                case Rspn.ROTARY:
                     change, = struct.unpack("<b", payload)
                     msg = f"Rotary: {change}"
                 case _:
@@ -236,9 +263,29 @@ class RightboardApp(App):
             self.call_from_thread(self.logger.write_line, msg)
 
 
+def send_serial(path, val):
+    ser = serial.Serial(path)
+    ser.write(val)
+    ser.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="Serial tester")
     parser.add_argument("serial", type=str, default="/dev/ttyUSB0", nargs="?", help="Serial port of device")
+    parser.add_argument(
+        "-b", "--enable-bridge",
+        nargs="?",
+        const="/dev/ttyACM0",
+        default=None,
+        help="Send USB command to enable bridge"
+    )
     args = parser.parse_args()
+    if args.enable_bridge is not None:
+        print("Enabling bridge")
+        send_serial(args.enable_bridge, BRIDGE_CMD)
     app = RightboardApp(args.serial, css_path="tui.tcss")
     app.run()
+
+    if args.enable_bridge is not None:
+        print("Stopping bridge")
+        send_serial(args.enable_bridge, END_BRIDGE)

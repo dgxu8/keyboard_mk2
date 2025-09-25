@@ -31,7 +31,7 @@ use ssd1306::size::DisplaySize128x32;
 use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 use static_cell::StaticCell;
 
-use util::cobs_uart::{self, cobs_config, CobsBuffer, CobsRx, CobsTx, UartTxMutex};
+use util::cobs_uart::{self, cobs_config, CmdId, CobsBuffer, CobsRx, CobsTx, RspnId, UartTxMutex};
 use util::logger::BUFFER;
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
@@ -143,35 +143,35 @@ async fn main(spawner: Spawner) -> ! {
     led1.set_low();
     let mut recv_buf = CobsBuffer::new();
     loop {
-        match select(uart_rx.read_cobs(&mut recv_buf), ENCODER_STATE.wait()).await {
-            Either::First(rslt) => 'recv: {
-                if rslt.is_err() {
-                    break 'recv;
-                }
-                match recv_buf[0] {
-                    cobs_uart::ALT_ENABLE => ALT_EN.signal(recv_buf[1] == 1),
-                    cobs_uart::GET_STATE => REPORT_FULL.signal(true),
-                    cobs_uart::CAPSLOCK => oled.send(Draw::Capslock(recv_buf[1] == 1)).await,
-                    cobs_uart::VOLUME => oled.send(Draw::Volume(recv_buf[1])).await,
-                    cobs_uart::OLED_MSG => {
+        match select(uart_rx.recv(&mut recv_buf), ENCODER_STATE.wait()).await {
+            Either::First(Ok(id)) => {
+                match id {
+                    CmdId::AltEnable => ALT_EN.signal(recv_buf[0] == 1),
+                    CmdId::GetState => REPORT_FULL.signal(true),
+                    CmdId::Capslock  => oled.send(Draw::Capslock(recv_buf[0] == 1)).await,
+                    CmdId::Volume  => oled.send(Draw::Volume(recv_buf[0])).await,
+                    CmdId::OLEDMsg => {
                         if recv_buf.len() - 1 < OLED_STR.free_capacity()  {
-                            OLED_STR.write_all(&recv_buf[1..]).await;
+                            OLED_STR.write_all(&recv_buf).await;
                             oled.send(Draw::String(10)).await;
                         } else {
                             defmt::warn!("Not enough space for str: {}", recv_buf.len() - 1);
                         }
                     },
-                    x => {
-                        let mut uart_tx = uart_tx.lock().await;
-                        uart_tx.send_nack(x).await.unwrap();
-                    },
+                    _ => (),
                 }
-                recv_buf.reset();
             },
+            Either::First(Err(cobs_uart::Error::InvalidId(val))) => {
+                let mut uart_tx = uart_tx.lock().await;
+                uart_tx.send_nack(val).await.unwrap();
+            },
+            Either::First(Err(_)) => (),
             Either::Second(rotary) => {
                 oled.send(Draw::EncoderState(rotary)).await;
+                continue;
             },
         }
+        recv_buf.reset();
     }
 }
 
@@ -179,7 +179,7 @@ async fn main(spawner: Spawner) -> ! {
 async fn run_logger(uart_tx: &'static UartTxMutex) {
     const BUF_LEN: usize = 32;
     let mut buf = [0; BUF_LEN];
-    buf[1] = cobs_uart::DEFMT_MSG;  // This will never change
+    buf[1] = RspnId::DefmtMsg as u8;  // This will never change
 
     Timer::after_secs(1).await;
     loop {
