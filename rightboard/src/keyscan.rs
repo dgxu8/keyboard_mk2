@@ -33,9 +33,9 @@ enum Error {
 type KeyUpdate = Vec<u8, 8>;
 type BoardState = [u8; COL_LEN];
 
+#[task_profiler::profile]
 #[embassy_executor::task]
 pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartTxMutex) {
-    let mut max = Duration::default();
 
     let oled = DISPLAY_DRAW.sender();
     let mut ticker = Ticker::every(Duration::from_millis(1));
@@ -45,31 +45,32 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
     loop {
         // If we get more than 8 changes send a full keystate scan
         let start: Instant = Instant::now();
+        task_profiler::set!();
+
         alt_en = ALT_EN.try_take().unwrap_or(alt_en);
         let scan = keys.scan(alt_en);
 
         if REPORT_FULL.try_take().is_some() || scan.is_err() {
             cold_path();
-            let mut uart_tx = uart_tx.lock().await;
+
             let state_id = if keys.alt_en {RspnId::AltState} else {RspnId::FullState};
+            let mut uart_tx = uart_tx.lock().await;
             uart_tx.send(RspnId::Timestamp, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
-            uart_tx.send(state_id, keys.get_full_state().as_slice()).await.unwrap();
+            let full_state = keys.get_full_state();
+            uart_tx.send(state_id, full_state.as_slice()).await.unwrap();
+            task_profiler::print!();
         } else if let Ok(update) = scan {
             if !update.is_empty() {
                 let mut uart_tx = uart_tx.lock().await;
                 uart_tx.send(RspnId::Timestamp, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
                 uart_tx.send(RspnId::KeyChange, update.as_slice()).await.unwrap();
-                defmt::info!("Got update: {}", start.as_millis());
+                task_profiler::print!();
             }
         }
-        let elapsed = Instant::now() - start;
         if keys.alt_en != prev_alt {
             oled.send(Draw::Numlock(keys.alt_en)).await;
             prev_alt = keys.alt_en;
-        }
-        if elapsed > max && !oled.is_full() {
-            oled.send(Draw::Timestamp(elapsed.as_micros())).await;
-            max = elapsed;
+            task_profiler::print!();
         }
         ticker.next().await;
     }

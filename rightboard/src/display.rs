@@ -58,6 +58,7 @@ const NUM_Y: u32 = (HEIGHT - ICON_HEIGHT) / 2;
 const CAPS_X: u32 = NUM_X - ICON_WIDTH - 2;
 const CAPS_Y: u32 = NUM_Y;
 
+#[task_profiler::profile]
 #[embassy_executor::task]
 pub async fn display_draw(mut display: DisplayAsync) {
 
@@ -67,17 +68,15 @@ pub async fn display_draw(mut display: DisplayAsync) {
     const NUM_ICON: MonoImage = raw_to_image!("./numlock.raw", ICON_WIDTH, NUM_X, NUM_Y);
     const CAPS_ICON: MonoImage = raw_to_image!("./capslock.raw", ICON_WIDTH, CAPS_X, CAPS_Y);
 
-    let mut start: Instant;
-    let mut elapsed: u64;
-    let mut str: String<8> = String::new();
+    let mut str: String<16> = String::new();
     loop {
-        match recv.receive().await {
+        let fut = recv.receive().await;
+        task_profiler::set!();
+        match fut {
             Draw::Numlock(state) => {
-                start = Instant::now();
                 display.draw_image(&NUM_ICON, state);
             },
             Draw::Capslock(state) => {
-                start = Instant::now();
                 display.draw_image(&CAPS_ICON, state);
             },
             Draw::Volume(level) => {
@@ -93,7 +92,6 @@ pub async fn display_draw(mut display: DisplayAsync) {
                 Text::with_baseline(&str, Point::zero(), text_style, Baseline::Top).draw(&mut display).unwrap();
             },
             Draw::EncoderState(state) => {
-                start = Instant::now();
                 str.clear();
                 core::write!(&mut str, "{}:{}", state.pos, state.interrupts).unwrap();
 
@@ -101,7 +99,6 @@ pub async fn display_draw(mut display: DisplayAsync) {
                 Text::with_baseline(&str, Point::new(0, 10), text_style, Baseline::Top).draw(&mut display).unwrap();
             },
             Draw::String(col) => {
-                start = Instant::now();
                 let mut buf = [0; 12];
                 if let Ok(len) = OLED_STR.try_read(&mut buf) {
                     display.clear_box(Point::new(0, col as _), Size::new(12*5, 10));
@@ -111,11 +108,10 @@ pub async fn display_draw(mut display: DisplayAsync) {
             },
         }
         display.flush().await.unwrap();
-        elapsed = (Instant::now() - start).as_micros();
         {
             str.clear();
-            core::write!(&mut str, "{}", elapsed).unwrap();
-            display.clear_box(Point::new(0, 20), Size::new(8*5, 10));
+            core::write!(&mut str, "{} {}", task_profiler::get_sync!(), task_profiler::get_async!()).unwrap();
+            display.clear_box(Point::new(0, 20), Size::new(16*5, 10));
             Text::with_baseline(&str, Point::new(0, 20), text_style, Baseline::Top).draw(&mut display).unwrap();
             display.flush().await.unwrap();
         }
