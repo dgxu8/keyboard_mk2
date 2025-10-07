@@ -1,6 +1,8 @@
 use embassy_futures::{join::join, select::{select, Either}};
 use embassy_stm32::{mode::Async, usart::UartRx};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+use embassy_time::Instant;
+use util::debounce;
 use embedded_io_async::Write;
 use util::cobs_uart::{bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, RspnId, SerialRx, UartTxMutex};
 
@@ -25,13 +27,22 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
     let (mut usb_tx, mut usb_rx) = class.split();
     uart_rx.start_uart();
     let mut recv_buf = CobsBuffer::new();
+
+    let mut full_state = [[0u8; 8]; 8];
     loop {
         match select(uart_rx.recv(&mut recv_buf), UART_STATE.wait()).await {
             Either::First(Ok(RspnId::DefmtMsg)) => {
                 bridge_rb(&mut usb_tx, &recv_buf).await;
             },
             Either::First(Ok(id)) => {
-                defmt::info!("[{:?}] {:?}", id, recv_buf.as_slice());
+                if id == RspnId::FullState {
+                    let start = Instant::now();
+                    debounce::rb_unpack_state(&mut recv_buf, &mut full_state);
+                    let dur = Instant::now() - start;
+                    defmt::info!("Full: {}:{:?}", dur.as_micros(), full_state)
+                } else {
+                    defmt::info!("[{:?}] {:?}", id, recv_buf.as_slice());
+                }
             },
             Either::First(Err(e)) => {
                 defmt::warn!("Cobs error: {:?}", e);
