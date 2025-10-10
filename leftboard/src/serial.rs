@@ -4,7 +4,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use embassy_time::Instant;
 use util::debounce;
 use embedded_io_async::Write;
-use util::cobs_uart::{bl_config, cobs_config, Clearable, CobsBuffer, CobsRx, RspnId, SerialRx, UartTxMutex};
+use util::cobs_uart::{bl_config, cobs_config, Clearable, CmdId, CobsBuffer, CobsRx, RspnId, SerialRx, UartTxMutex};
 
 use crate::{logger::bridge_rb, usb::{CdcDev, UsbRx, UsbTx}};
 
@@ -16,6 +16,7 @@ pub enum UartState {
 }
 
 pub static UART_STATE: Signal<CriticalSectionRawMutex, UartState> = Signal::new();
+pub static FLASH_READY: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 
 #[embassy_executor::task]
 pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>, mut class: CdcDev) -> ! {
@@ -33,6 +34,11 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
         match select(uart_rx.recv(&mut recv_buf), UART_STATE.wait()).await {
             Either::First(Ok(RspnId::DefmtMsg)) => {
                 bridge_rb(&mut usb_tx, &recv_buf).await;
+            },
+            Either::First(Ok(RspnId::Ack)) => {
+                if recv_buf[0] == CmdId::ReadyFlash as u8 {
+                    FLASH_READY.signal(true);
+                }
             },
             Either::First(Ok(id)) => {
                 if id == RspnId::FullState {

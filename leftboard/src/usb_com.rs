@@ -1,11 +1,12 @@
 use embassy_stm32::gpio::Output;
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer, WithTimeout};
 use embassy_usb::driver::EndpointError;
 use embedded_hal::digital::{OutputPin, PinState};
 use strum::FromRepr;
 use util::cobs_uart::{CmdId, CobsTx, UartTxMutex};
 
 use crate::logger::BRIDGE_RB_DEFMT;
+use crate::serial::FLASH_READY;
 use crate::usb::UsbRx;
 use crate::{logger::OUTPUT_DEFMT, serial::{UartState, UART_STATE}, set_boot_option};
 
@@ -77,9 +78,12 @@ async fn handle_data<'a>(id: Cmd, uart_tx: &'static UartTxMutex, rb_ctrl: &mut C
         Cmd::Defmt => OUTPUT_DEFMT.signal(true),
         Cmd::Bootloader => set_boot_option(false, true, false),
         Cmd::RbBootloader => {
-            let mut uart_tx = uart_tx.lock().await;
-            uart_tx.send(CmdId::OLEDMsg, "Flashing".as_bytes()).await.unwrap();
-            Timer::after_millis(100).await;
+            FLASH_READY.reset();
+            {
+                let mut uart_tx = uart_tx.lock().await;
+                uart_tx.send(CmdId::ReadyFlash, &[]).await.unwrap();
+            }
+            let _ = FLASH_READY.wait().with_timeout(Duration::from_secs(5)).await;
             rb_ctrl.reset(PinState::High).await;
             UART_STATE.signal(UartState::LoaderBridge);
             return UartState::LoaderBridge;

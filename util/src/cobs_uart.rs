@@ -63,6 +63,7 @@ pub enum CmdId {
     Capslock = 4,
     Volume = 5,
     OLEDMsg = 6,
+    ReadyFlash = 7,
 }
 
 #[derive(FromRepr, Clone, Copy, PartialEq, Eq, defmt::Format)]

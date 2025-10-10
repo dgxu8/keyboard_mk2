@@ -4,7 +4,6 @@ use embassy_stm32::i2c::{I2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_sync::pipe::Pipe;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::Instant;
 use embedded_graphics::image::ImageRaw;
 use embedded_graphics::mono_font::ascii::{FONT_5X8, FONT_9X18};
 use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder};
@@ -39,6 +38,7 @@ pub enum Draw {
     Timestamp(u64),
     EncoderState(EncoderState),
     String(u8),  // column offset
+    FlashIco,
 }
 
 type MonoImage = Image<'static, ImageRaw<'static, BinaryColor>>;
@@ -80,11 +80,9 @@ pub async fn display_draw(mut display: DisplayAsync) {
                 display.draw_image(&CAPS_ICON, state);
             },
             Draw::Volume(level) => {
-                start = Instant::now();
                 display.draw_volume(level, Point::new(CAPS_X as i32 - (10 * 4), 8));
             },
             Draw::Timestamp(time) => {
-                start = Instant::now();
                 str.clear();
                 core::write!(&mut str, "{}", time).unwrap();
 
@@ -105,6 +103,10 @@ pub async fn display_draw(mut display: DisplayAsync) {
                     let s = core::str::from_utf8(&buf[..len]).unwrap();
                     Text::with_baseline(s, Point::new(0, col as _), text_style, Baseline::Top).draw(&mut display).unwrap();
                 }
+            },
+            Draw::FlashIco => {
+                display.clear_box(Point::new(0, 10), Size::new(12*5, 10));
+                Text::with_baseline("Flashing", Point::new(0, 10), text_style, Baseline::Top).draw(&mut display).unwrap();
             },
         }
         display.flush().await.unwrap();

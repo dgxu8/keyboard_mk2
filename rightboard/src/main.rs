@@ -158,6 +158,11 @@ async fn main(spawner: Spawner) -> ! {
                             defmt::warn!("Not enough space for str: {}", recv_buf.len() - 1);
                         }
                     },
+                    CmdId::ReadyFlash => {
+                        oled.send(Draw::FlashIco).await;
+                        let mut uart_tx = uart_tx.lock().await;
+                        uart_tx.send_ack(CmdId::ReadyFlash as u8).await.unwrap();
+                    },
                     _ => (),
                 }
             },
