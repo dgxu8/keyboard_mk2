@@ -161,14 +161,14 @@ async fn main(spawner: Spawner) -> ! {
                     CmdId::ReadyFlash => {
                         oled.send(Draw::FlashIco).await;
                         let mut uart_tx = uart_tx.lock().await;
-                        uart_tx.send_ack(CmdId::ReadyFlash as u8).await.unwrap();
+                        uart_tx.send_ack(CmdId::ReadyFlash as u8).await;
                     },
                     _ => (),
                 }
             },
             Either::First(Err(cobs_uart::Error::InvalidId(val))) => {
                 let mut uart_tx = uart_tx.lock().await;
-                uart_tx.send_nack(val).await.unwrap();
+                uart_tx.send_nack(val).await;
             },
             Either::First(Err(_)) => (),
             Either::Second(rotary) => {
@@ -209,6 +209,6 @@ async fn run_logger(uart_tx: &'static UartTxMutex) {
         buf[len] = 0;
 
         let mut uart_tx = uart_tx.lock().await;
-        uart_tx.write_all(&buf[..len+1]).await.unwrap();
+        unsafe { uart_tx.write_all(&buf[..len+1]).await.unwrap_unchecked() };
     }
 }

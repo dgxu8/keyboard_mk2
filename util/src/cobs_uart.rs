@@ -132,28 +132,31 @@ type WriteType = RspnId;
 
 #[trait_variant::make(Send)]  // Needed for public async trait
 pub trait CobsTx {
+    async fn send_ack(&mut self, id: u8);
+    async fn send_nack(&mut self, id: u8);
     async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error>;
-    async fn send_ack(&mut self, id: u8) -> Result<(), Error>;
-    async fn send_nack(&mut self, id: u8) -> Result<(), Error>;
     async fn send(&mut self, id: WriteType, payload: &[u8]) -> Result<(), Error>;
 }
 
 impl<'a> CobsTx for UartTx<'a, Async> {
-    async fn send_ack(&mut self, id: u8) -> Result<(), Error> {
+    async fn send_ack(&mut self, id: u8) {
         assert_ne!(id, ACK);
         let ack: [u8; 4] = [0x1, 0x2, id, 0x0];
-        self.write_all(ack.as_slice()).await?;
-        Ok(())
+        // self.write_all() cannot error when used with embassy_stm32 uart
+        unsafe { self.write_all(ack.as_slice()).await.unwrap_unchecked() };
     }
-    async fn send_nack(&mut self, id: u8) -> Result<(), Error> {
+    async fn send_nack(&mut self, id: u8) {
         assert_ne!(id, ACK);
         let ack: [u8; 4] = [0x3, NAK, id as _, 0x0];
-        self.write_all(ack.as_slice()).await?;
-        Ok(())
+        // self.write_all() cannot error when used with embassy_stm32 uart
+        unsafe { self.write_all(ack.as_slice()).await.unwrap_unchecked() };
     }
     async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error> {
         assert_ne!(id, ACK);
-        let mut packet: SerialBuffer = Vec::from_slice(&[2, id]).unwrap();
+        let mut packet: SerialBuffer = unsafe {
+            // We know the size going into SerialBuffer
+            Vec::from_slice(&[2, id]).unwrap_unchecked()
+        };
         let mut overhead_idx = 0;
         for byte in payload {
             let byte = *byte;
@@ -164,7 +167,8 @@ impl<'a> CobsTx for UartTx<'a, Async> {
             packet[overhead_idx] += 1;
         }
         packet.push(0)?;
-        self.write_all(packet.as_slice()).await?;
+        // self.write_all() cannot error when used with embassy_stm32 uart
+        unsafe { self.write_all(packet.as_slice()).await.unwrap_unchecked() };
         Ok(())
     }
     #[inline(always)]
@@ -222,7 +226,8 @@ impl<'a> CobsRx for RingBufferedUartRx<'a> {
         if rslt.ovfl_idx != 0 {
             return Err(Error::PacketError);
         }
-        Ok(rslt.opcode.unwrap())
+        // rslt.opcode must be set to get here
+        Ok(unsafe {rslt.opcode.unwrap_unchecked()})
     }
     async fn recv<'b>(&mut self, rslt: &'b mut CobsBuffer) -> Result<ReadType, Error> {
         let id = self.read_cobs(rslt).await?;
