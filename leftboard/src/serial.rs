@@ -82,16 +82,32 @@ async fn rb_bridge<'a, 'b>(uart_tx: &'a UartTxMutex, uart_rx: &mut SerialRx<'a>,
     let pc_to_rb_fut = async {
         let mut buf = [0; 64];
         loop {
-            let len = usb_rx.read_packet(&mut buf).await.unwrap();
+            let len = match usb_rx.read_packet(&mut buf).await {
+                Ok(len) => len,
+                Err(e) => {
+                    defmt::warn!("[pc] -> rb: {:?}", e);
+                    continue;
+                }
+            };
             let mut uart_tx = uart_tx.lock().await;
-            uart_tx.write_all(&buf[..len]).await.unwrap();
+            if let Err(e) = uart_tx.write_all(&buf[..len]).await {
+                defmt::warn!("pc -> [rb] {:?}", e);
+            }
         }
     };
     let rb_to_pc_fut = async {
         let mut buf = [0; 63];  // write one less than max packet size
         loop {
-            let len = uart_rx.read(&mut buf).await.unwrap();
-            usb_tx.write_packet(&mut buf[..len]).await.unwrap();
+            let len = match uart_rx.read(&mut buf).await {
+                Ok(len) => len,
+                Err(e) => {
+                    defmt::warn!("pc <- [rb] {:?}", e);
+                    continue;
+                }
+            };
+            if let Err(e) = usb_tx.write_packet(&mut buf[..len]).await {
+                defmt::warn!("[pc] <- rb {:?}", e);
+            }
         }
     };
 
