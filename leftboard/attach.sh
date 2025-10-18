@@ -27,4 +27,5 @@ enable_defmt_out &
 
 # This locks out the serial port even though it only reads out of the port
 # defmt-print --show-skipped-frames -e $ELF serial --path $TTY
+stty -F ${TTY} raw -echo
 socat ${TTY},b115200,raw,echo=0 STDOUT | defmt-print --show-skipped-frames -e $ELF

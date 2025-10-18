@@ -2,6 +2,7 @@
 
 STM32_DFU="0483:df11"
 KEYBOARD_ID="c0de:cafe"
+# KEYBOARD_ID="045b:024d"
 COM_TTY="/dev/ttyACM0"
 OPTION_UPDATE=""
 
@@ -32,7 +33,11 @@ if [ $? -ne 0 ]; then
     OPTION_UPDATE="set"
     echo -en  '\x01' > $COM_TTY
     # sudo usbreset $KEYBOARD_ID > /dev/null
-    poll_for_id $STM32_DFU
+    timeout 5 bash -c "poll_for_id $STM32_DFU"
+    if [ $? -ne 0 ]; then
+        echo "STM32 DFU not detected, failed to enter bootloader, exiting.."
+        exit 1
+    fi
 fi
 
 set -ep
