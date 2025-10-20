@@ -8,6 +8,7 @@ mod usb_com;
 mod usb;
 mod logger;
 mod serial;
+mod keyscan;
 
 use cortex_m::asm;
 use defmt;
@@ -19,12 +20,13 @@ use embassy_stm32::rcc::{Hsi48Config, Pll, PllMul, PllPreDiv, PllRDiv, PllSource
 use embassy_stm32::usart::Uart;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, Config};
-use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_sync::mutex::Mutex;
 use embassy_time::Timer;
 use static_cell::StaticCell;
 use util::cobs_uart::{cobs_config, UartTxMutex};
 
+use crate::keyscan::Keyscan;
 use crate::usb::{init_usb, MyRequestHandler, NKROKeyboardReport};
 use crate::usb_com::CoprocCtrl;
 
@@ -63,6 +65,24 @@ async fn main(spawner: Spawner) {
     // embassy_stm32::pac::GPIOB.bsrr().write(|w| w.set_bs(0, true));
     let mut led1 = Output::new(p.PB1, Level::Low, Speed::Low);
 
+    let select_pins = [
+        Output::new(p.PA4, Level::Low, Speed::VeryHigh),
+        Output::new(p.PA5, Level::Low, Speed::VeryHigh),
+        Output::new(p.PA6, Level::Low, Speed::VeryHigh),
+    ];
+    let keys_input = [
+        Input::new(p.PB3, Pull::Down),
+        Input::new(p.PB4, Pull::Down),
+        Input::new(p.PB5, Pull::Down),
+        Input::new(p.PB6, Pull::Down),
+        Input::new(p.PB7, Pull::Down),
+    ];
+    let keys = Keyscan::new(
+        select_pins,
+        Output::new(p.PA7, Level::High, Speed::Low),
+        keys_input,
+    );
+
     let mut rb_ctrl = CoprocCtrl {
         boot0: Output::new(p.PA14, Level::Low, Speed::Low),
         n_rst: Output::new(p.PA15, Level::Low, Speed::Low),
@@ -94,6 +114,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(logger::run(defmt_out)).unwrap();
     spawner.spawn(usb_com::run(acm0_in, uart_tx, rb_ctrl)).unwrap();
     spawner.spawn(serial::run(uart_tx, uart_rx, acm1)).unwrap();
+    spawner.spawn(keyscan::run(keys)).unwrap();
 
     let blink_fut = async {
         let mut keycode = [0; 13];
