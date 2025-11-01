@@ -12,6 +12,7 @@ pub mod display;
 
 use embassy_futures::select::{select, Either};
 use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::flash::Flash;
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::time::Hertz;
 use embassy_sync::mutex::Mutex;
@@ -35,7 +36,7 @@ use util::cobs_uart::{self, cobs_config, CmdId, CobsBuffer, CobsRx, CobsTx, Rspn
 use util::logger::BUFFER;
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
-use crate::keyscan::{key_scan, Keyscan, ALT_EN, KEYS, REPORT_FULL};
+use crate::keyscan::{key_scan, Keymap, Keyscan, ALT_EN, KEYMAP, KEYS, REPORT_FULL};
 use crate::display::{display_draw, Draw, DISPLAY_DRAW, OLED_STR};
 
 bind_interrupts!(struct UsartIrqs {
@@ -115,6 +116,10 @@ async fn main(spawner: Spawner) -> ! {
     let rot_pin_b = ExtiInput::new(p.PB13, p.EXTI13, Pull::None);
     spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a, uart_tx)).unwrap();
 
+    let flash = Flash::new_blocking(p.FLASH);
+    let keymap = Keymap::new(flash, 0);
+    let keymap = KEYMAP.init(Mutex::new(keymap));
+
     const RX_BUF_SIZE: usize = 32;
     let mut rx_buf: [u8; RX_BUF_SIZE] = [0; RX_BUF_SIZE];
     let mut uart_rx: RingBufferedUartRx = uart_rx.into_ring_buffered(&mut rx_buf);
@@ -163,6 +168,30 @@ async fn main(spawner: Spawner) -> ! {
                         let mut uart_tx = uart_tx.lock().await;
                         uart_tx.send_ack(CmdId::ReadyFlash as u8).await;
                     },
+                    CmdId::SaveKeymap => {
+                        defmt::info!("Saving rightboard");
+                        let mut map = keymap.lock().await;
+                        map.save();
+                    },
+                    CmdId::ClearKeymap => {
+                        defmt::info!("Clearing rightboard");
+                        let mut map = keymap.lock().await;
+                        map.clear();
+                    },
+                    CmdId::UpdateKeymap => {
+                        let mut map = keymap.lock().await;
+                        map.update_right(&recv_buf);
+                    },
+                    CmdId::UpdateAltKeymap => {
+                        let mut map = keymap.lock().await;
+                        map.update_numpad(&recv_buf);
+                    },
+                    CmdId::UpdateRotary => {
+                        let mut map = keymap.lock().await;
+                        if map.update_rotary(&recv_buf).is_err() {
+                            defmt::warn!("Failed to update rotary binds");
+                        }
+                    }
                     _ => (),
                 }
             },

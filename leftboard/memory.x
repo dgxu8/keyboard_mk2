@@ -1,0 +1,10 @@
+MEMORY
+{
+  /* NOTE 1 K = 1 KiBi = 1024 bytes */
+    FLASH  : ORIGIN = 0x08000000, LENGTH =  254K /* BANK_1 */
+    KEYMAP : ORIGIN = 0x0803F800, LENGTH =    2K /* BANK_1 Page 127 */
+    RAM    : ORIGIN = 0x20000000, LENGTH =   64K /* SRAM + SRAM2 */
+}
+
+__keymap_start = ORIGIN(KEYMAP) - ORIGIN(FLASH);
+__keymap_end = ORIGIN(KEYMAP) + LENGTH(KEYMAP) - ORIGIN(FLASH);

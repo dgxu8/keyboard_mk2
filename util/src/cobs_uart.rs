@@ -64,6 +64,12 @@ pub enum CmdId {
     Volume = 5,
     OLEDMsg = 6,
     ReadyFlash = 7,
+
+    ClearKeymap = 8,
+    SaveKeymap = 9,
+    UpdateKeymap = 10,
+    UpdateAltKeymap = 11,
+    UpdateRotary = 12,
 }
 
 #[derive(FromRepr, Clone, Copy, PartialEq, Eq, defmt::Format)]

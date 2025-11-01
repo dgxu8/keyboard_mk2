@@ -15,6 +15,7 @@ use defmt;
 
 use embassy_executor::Spawner;
 use embassy_futures::join;
+use embassy_stm32::flash::Flash;
 use embassy_stm32::rcc::mux::Clk48sel;
 use embassy_stm32::rcc::{Hsi48Config, Pll, PllMul, PllPreDiv, PllRDiv, PllSource, Sysclk};
 use embassy_stm32::usart::Uart;
@@ -22,11 +23,11 @@ use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, Config};
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_sync::mutex::Mutex;
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use static_cell::StaticCell;
 use util::cobs_uart::{cobs_config, UartTxMutex};
 
-use crate::keyscan::Keyscan;
+use crate::keyscan::{Keymap, Keyscan, KEYMAP};
 use crate::usb::{init_usb, MyRequestHandler, NKROKeyboardReport};
 use crate::usb_com::CoprocCtrl;
 
@@ -39,6 +40,11 @@ bind_interrupts!(struct UsartIrqs {
 });
 
 // static UART: StaticCell<Uart<'static, Async>> = StaticCell::new();
+
+unsafe extern "C" {
+    static __keymap_start: u32;
+    static __keymap_end: u32;
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -108,13 +114,20 @@ async fn main(spawner: Spawner) {
     let (reader, mut writer) = hid.split();
     let (defmt_out, acm0_in) = acm0.split();
 
+    let keymap_start = unsafe {&__keymap_start as *const u32 as u32};
+    let keymap_end = unsafe {&__keymap_end as *const u32 as u32};
+    let flash = Flash::new_blocking(p.FLASH).into_blocking_regions().bank1_region;
+    let keymap = Keymap::new(flash, keymap_start, keymap_end);
+    let keymap = KEYMAP.init(Mutex::new(keymap));
+
+    defmt::info!("Boot time: {}us", Instant::now().as_micros());
     Timer::after_millis(5).await;
     rb_ctrl.n_rst.set_high();
 
     spawner.spawn(logger::run(defmt_out)).unwrap();
-    spawner.spawn(usb_com::run(acm0_in, uart_tx, rb_ctrl)).unwrap();
+    spawner.spawn(usb_com::run(acm0_in, uart_tx, rb_ctrl, keymap)).unwrap();
     spawner.spawn(serial::run(uart_tx, uart_rx, acm1)).unwrap();
-    spawner.spawn(keyscan::run(keys)).unwrap();
+    spawner.spawn(keyscan::run(keys, keymap)).unwrap();
 
     let blink_fut = async {
         let mut keycode = [0; 13];

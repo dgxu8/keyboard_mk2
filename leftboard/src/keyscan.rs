@@ -1,16 +1,23 @@
-use embassy_stm32::{gpio::{Input, Output}, pac};
+use core::ops::{Deref, DerefMut};
+
+use embassy_stm32::{flash::{Bank1Region, Blocking}, gpio::{Input, Output}, pac};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Instant, Ticker};
-use util::debounce;
+use static_cell::StaticCell;
+use util::{debounce, keymap::KeyType};
 
 static ROW_LEN: usize = 5;
 static COL_LEN: usize = 8;
 
 #[embassy_executor::task]
-pub async fn run(mut keys: Keyscan<'static>) {
+pub async fn run(mut keys: Keyscan<'static>, keymap: &'static KeymapMutex) {
     let mut ticker = Ticker::every(Duration::from_millis(1));
     loop {
         let start = Instant::now();
-        let change =  keys.scan();
+        let change =  {
+            let mut keymap = keymap.lock().await;
+            keys.scan(&mut keymap)
+        };
         let dur = Instant::now() - start;
         if change {
             defmt::info!("Keyscan time: {}", dur.as_micros());
@@ -51,12 +58,12 @@ impl<'a> Keyscan<'a> {
 
     // fn scan(&mut self, update: &mut Vec<u8, 8>) {
     #[inline(always)]
-    fn scan(&mut self) -> bool {
+    fn scan(&mut self, keymap: &mut Keymap) -> bool {
         let mut change = false;
         // We enter here w/ decoder set to col zero
         for col in 0..8 {
             let notify = |row, state| {
-                defmt::info!("({},{}): {}", col, row, state);
+                defmt::info!("{}: {}", keymap.map[col as usize][row as usize], state);
                 change = true;
             };
             let reg = self.read_raw();
@@ -65,5 +72,68 @@ impl<'a> Keyscan<'a> {
             debounce::debounce(&mut self.state[col], reg, notify);
         }
         change
+    }
+}
+
+pub type KeymapMutex = Mutex<CriticalSectionRawMutex, Keymap<'static>>;
+pub static KEYMAP: StaticCell<KeymapMutex> = StaticCell::new();
+
+#[repr(C, align(8))]
+#[derive(Default)]
+pub struct Map([[KeyType; ROW_LEN]; COL_LEN]);
+
+impl Map {
+    pub const fn len() -> usize {
+        size_of::<Map>()
+    }
+}
+
+impl Deref for Map {
+    type Target = [[KeyType; ROW_LEN]; COL_LEN];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Map {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+pub struct Keymap<'a> {
+    pub map: Map,
+    flash: Bank1Region<'a, Blocking>,
+    start_addr: u32,
+    end_addr: u32,
+}
+
+impl<'a> Keymap<'a> {
+    pub fn new(mut flash: Bank1Region<'a, Blocking>, start_addr: u32, end_addr: u32) -> Self {
+        let mut data = [0; Map::len()];
+        flash.blocking_read(start_addr, &mut data).unwrap();
+        Keymap {
+            map: unsafe{ core::mem::transmute(data) },
+            flash,
+            start_addr,
+            end_addr,
+        }
+    }
+    pub fn save(&mut self) {
+        self.flash.blocking_erase(self.start_addr, self.end_addr).unwrap();
+        let buf: [u8; Map::len()] = unsafe { core::mem::transmute_copy(&self.map) };
+        self.flash.blocking_write(self.start_addr, &buf).unwrap();
+    }
+    pub fn clear(&mut self) {
+        self.map = Map::default();
+    }
+    pub fn update(&mut self, buff: &[u8]) {
+        // buff.chunks(16);
+        if let Ok(bind) = KeyType::try_from(&buff[2..]) {
+            self.map[buff[0] as usize][buff[1] as usize] = bind;
+        } else {
+            defmt::error!("Invalid keybind: {:?}", buff);
+        }
     }
 }

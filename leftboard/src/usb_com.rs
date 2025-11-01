@@ -1,3 +1,4 @@
+use embassy_futures::join::join;
 use embassy_stm32::gpio::Output;
 use embassy_time::{Duration, Timer, WithTimeout};
 use embassy_usb::driver::EndpointError;
@@ -5,6 +6,7 @@ use embedded_hal::digital::{OutputPin, PinState};
 use strum::FromRepr;
 use util::cobs_uart::{CmdId, CobsTx, UartTxMutex};
 
+use crate::keyscan::KeymapMutex;
 use crate::logger::BRIDGE_RB_DEFMT;
 use crate::serial::FLASH_READY;
 use crate::usb::UsbRx;
@@ -69,10 +71,16 @@ enum Cmd {
     RbBridge = 3,
     RbEndBridge = 4,
     RbDefmt = 5,
-    UpdateKeymap = 6,
+
+    ClearKeymap = 6,
+    SaveKeymap = 7,
+    UpdateLeftKeymap = 8,
+    UpdateRightKeymap = 9,
+    UpdateAltKeymap = 10,
+    UpdateRotarymap = 11,
 }
 
-#[inline]
+#[inline(always)]
 async fn handle_data<'a>(id: Cmd, uart_tx: &'static UartTxMutex, rb_ctrl: &mut CoprocCtrl<'a>) -> UartState {
     match id {
         Cmd::Defmt => OUTPUT_DEFMT.signal(true),
@@ -83,7 +91,7 @@ async fn handle_data<'a>(id: Cmd, uart_tx: &'static UartTxMutex, rb_ctrl: &mut C
                 let mut uart_tx = uart_tx.lock().await;
                 uart_tx.send(CmdId::ReadyFlash, &[]).await.unwrap();
             }
-            let _ = FLASH_READY.wait().with_timeout(Duration::from_secs(5)).await;
+            _ = FLASH_READY.wait().with_timeout(Duration::from_secs(3)).await;
             rb_ctrl.reset(PinState::High).await;
             UART_STATE.signal(UartState::LoaderBridge);
             return UartState::LoaderBridge;
@@ -96,27 +104,75 @@ async fn handle_data<'a>(id: Cmd, uart_tx: &'static UartTxMutex, rb_ctrl: &mut C
             defmt::info!("Starting defmt bridge");
             BRIDGE_RB_DEFMT.signal(true);
         },
-        Cmd::UpdateKeymap => (),
         _ => (),
     }
     UartState::Normal
 }
 
 #[embassy_executor::task]
-pub async fn run(mut data_in: UsbRx<'static>, uart_tx: &'static UartTxMutex, mut rb_ctrl: CoprocCtrl<'static>) {
-    let mut recv_buf = [0; 1];
+pub async fn run(mut data_in: UsbRx<'static>, uart_tx: &'static UartTxMutex, mut rb_ctrl: CoprocCtrl<'static>, keymap: &'static KeymapMutex) {
+    let mut recv_buf = [0; 64];
     let mut state = UartState::Normal;
 
     data_in.wait_connection().await;
     loop {
-        if let Err(e) = data_in.read_packet(&mut recv_buf).await {
-            if e == EndpointError::Disabled {
-                critical_section::with(|_| cortex_m::peripheral::SCB::sys_reset());
-            }
-            continue;
-        }
+        let size = match data_in.read_packet(&mut recv_buf).await {
+            Ok(size) => size,
+            Err(EndpointError::Disabled) => critical_section::with(|_| cortex_m::peripheral::SCB::sys_reset()),
+            Err(_) => continue,
+        };
 
         match Cmd::from_repr(recv_buf[0]) {
+            Some(Cmd::UpdateLeftKeymap) => {
+                let mut keymap = keymap.lock().await;
+                keymap.update(&mut recv_buf[1..size]);
+            },
+            Some(Cmd::UpdateRightKeymap) => {
+                let mut uart_tx = uart_tx.lock().await;
+                if uart_tx.send(CmdId::UpdateKeymap, &recv_buf[1..size]).await.is_err() {
+                    defmt::warn!("Failed to send right keymap");
+                }
+            },
+            Some(Cmd::UpdateAltKeymap) => {
+                let mut uart_tx = uart_tx.lock().await;
+                if uart_tx.send(CmdId::UpdateAltKeymap, &recv_buf[1..size]).await.is_err() {
+                    defmt::warn!("Failed to send numpad keymap");
+                }
+            },
+            Some(Cmd::UpdateRotarymap) => {
+                let mut uart_tx = uart_tx.lock().await;
+                if uart_tx.send(CmdId::UpdateRotary, &recv_buf[1..size]).await.is_err() {
+                    defmt::warn!("Failed to send Rotary mapping");
+                }
+            },
+            Some(Cmd::SaveKeymap) => {
+                defmt::info!("Saving keymap");
+                let send_save_fut = async {
+                    let mut uart_tx = uart_tx.lock().await;
+                    if uart_tx.send(CmdId::SaveKeymap, &[]).await.is_err() {
+                        defmt::warn!("Failed to send save keymap");
+                    }
+                };
+                let save_fut = async {
+                    let mut keymap = keymap.lock().await;
+                    keymap.save();
+                };
+                join(send_save_fut, save_fut).await;
+            },
+            Some(Cmd::ClearKeymap) => {
+                defmt::info!("Clearing keymap");
+                let send_clear_fut = async {
+                    let mut uart_tx = uart_tx.lock().await;
+                    if uart_tx.send(CmdId::ClearKeymap, &[]).await.is_err() {
+                        defmt::warn!("Failed to send clear keymap");
+                    }
+                };
+                let clear_fut = async {
+                    let mut keymap = keymap.lock().await;
+                    keymap.clear();
+                };
+                join(send_clear_fut, clear_fut).await;
+            },
             Some(cmd) if state == UartState::Normal => {
                 state = handle_data(cmd, uart_tx, &mut rb_ctrl).await;
             }

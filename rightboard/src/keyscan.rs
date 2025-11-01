@@ -1,3 +1,5 @@
+use embassy_stm32::flash::{Blocking, Flash};
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker};
 use embassy_stm32::gpio::{Input, Output};
 use embassy_stm32::pac;
@@ -6,6 +8,7 @@ use embassy_sync::signal::Signal;
 use heapless::Vec;
 use static_cell::StaticCell;
 use util::debounce::{self, RB_COL_LEN, RB_ROW_LEN};
+use util::keymap::KeyType;
 
 use core::hint::cold_path;
 use core::ops::Deref;
@@ -150,5 +153,67 @@ impl<'a> Keyscan<'a> {
         }
         let notify = |state| update.push(self.alt_en, 0, 7, state as u8);
         debounce::integrate(&mut self.state[0][7], self.enc_btn.is_low(), notify);
+    }
+}
+
+
+const NUM_ROW_LEN: usize = 7;
+const NUM_COL_LEN: usize = 3;
+
+pub type KeymapMutex = Mutex<CriticalSectionRawMutex, Keymap<'static>>;
+pub static KEYMAP: StaticCell<KeymapMutex> = StaticCell::new();
+
+macro_rules! push_keymap {
+    ($matrix:expr, $buff:expr) => {
+        if let Ok(bind) = KeyType::try_from(&$buff[2..]) {
+            $matrix[$buff[0] as usize][$buff[1] as usize] = bind;
+        } else {
+            defmt::error!("Invalid keybind: {:?}", $buff);
+        }
+    };
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub struct Map {
+    pub right: [[KeyType; RB_ROW_LEN]; RB_COL_LEN],
+    pub numpad: [[KeyType; NUM_ROW_LEN]; NUM_COL_LEN],
+    pub ccw: KeyType,
+    pub cw: KeyType,
+}
+
+pub struct Keymap<'a> {
+    pub keymap: Map,
+    flash: Flash<'a, Blocking>,
+    start_addr: u32,
+}
+
+impl<'a> Keymap<'a> {
+    pub fn new(flash: Flash<'a, Blocking>, start_addr: u32) -> Self {
+        let mut data = [0; size_of::<Map>()];
+        flash.eeprom_read_slice(start_addr, &mut data).unwrap();
+        Keymap {
+            keymap: unsafe { core::mem::transmute(data) },
+            flash,
+            start_addr,
+        }
+    }
+    pub fn save(&mut self) {
+        let buf: [u8; size_of::<Map>()] = unsafe { core::mem::transmute_copy(&self.keymap) };
+        self.flash.eeprom_write_slice(self.start_addr, &buf).unwrap();
+    }
+    pub fn clear(&mut self) {
+        self.keymap = Map::default();
+    }
+    pub fn update_right(&mut self, buff: &[u8]) {
+        push_keymap!(self.keymap.right, buff);
+    }
+    pub fn update_numpad(&mut self, buff: &[u8]) {
+        push_keymap!(self.keymap.numpad, buff);
+    }
+    pub fn update_rotary(&mut self, buff: &[u8]) -> Result<(), ()> {
+        self.keymap.ccw = KeyType::try_from(&buff[..2])?;
+        self.keymap.cw = KeyType::try_from(&buff[2..])?;
+        Ok(())
     }
 }

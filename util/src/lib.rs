@@ -2,6 +2,7 @@
 pub mod cobs_uart;
 pub mod logger;
 pub mod debounce;
+pub mod keymap;
 
 // pub fn add(left: u64, right: u64) -> u64 {
 //     left + right

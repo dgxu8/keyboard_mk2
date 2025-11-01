@@ -9,4 +9,5 @@ dependencies = [
     "pyserial>=3.5",
     "textual-dev>=1.7.0",
     "textual>=3.7.1",
+    "pyyaml>=6.0.3",
 ]
