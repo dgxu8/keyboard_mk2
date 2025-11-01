@@ -37,5 +37,5 @@ bench = false
 codegen-units = 1
 debug = 2
 lto = "fat"
-# See: https://docs.rust-embedded.org/book/unsorted/speed-vs-size.html
-opt-level = 'z'  # Maybe switch to 's' for loop vectorization
+# Could use "s" for size but we have more than enough space for speed optimizations
+opt-level = 3

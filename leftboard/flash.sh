@@ -51,7 +51,7 @@ if [ -n $OPTION_UPDATE ]; then
 fi
 echo ""
 
-./attach.sh
+./attach.sh $1
 
 # STM32_Programmer_CLI -l usb
 # TODO: add a way to parse the USB with the list command above
