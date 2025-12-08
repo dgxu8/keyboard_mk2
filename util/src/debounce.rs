@@ -1,4 +1,4 @@
-use heapless::Vec;
+use crate::keymap::{FullState, KeyType};
 
 pub const RB_ROW_LEN: usize = 8;
 pub const RB_COL_LEN: usize = 8;
@@ -9,13 +9,19 @@ const MIN: u8 = 0;
 const OVERSHOOT: u8 = 25;
 
 #[inline(always)]
-pub fn rb_pack_state(state: &[[u8; RB_ROW_LEN]; RB_COL_LEN]) -> Vec<u8, RB_COL_LEN> {
-    state.iter().map(|col| {
-        // col.iter().rev().fold(0, |acc, &x| {
-        col.iter().rev().fold(0, |acc, &x| {
-            acc << 1 | ((x > FLIP) as u8)
-        })
-    }).collect()
+pub fn rb_encode<F>(state: &[[u8; RB_ROW_LEN]; RB_COL_LEN], map: F) -> FullState
+where
+    F: Fn(usize, usize) -> KeyType
+{
+    let mut full_state = FullState::new();
+    for (col, inner) in state.iter().enumerate() {
+        for (row, val) in inner.iter().enumerate() {
+            if *val > FLIP {
+                full_state.set(map(col, row));
+            }
+        }
+    }
+    full_state
 }
 
 #[inline(always)]
@@ -29,29 +35,35 @@ pub fn rb_unpack_state(buf: &[u8], state: &mut [[u8; RB_ROW_LEN]; RB_COL_LEN]) {
     }
 }
 
+/// Parse and debounce state
+///
+/// If "coproc" feature is set, notify will be called on changes in state. If it isn't set then
+/// notify is called on all keys that are pressed.
 #[inline(always)]
-pub fn debounce<F>(state: &mut [u8], mut reg: u32, mut notify: F)
+pub fn debounce<F, G>(state: &mut [u8], mut reg: u32, mut notify_change: F, mut notify_pressed: G)
 where
     F: FnMut(u8, bool) -> (),
+    G: FnMut(u8) -> (),
 {
     for i in 0..state.len() {
         let val = reg & 0x1 != 0;
-        integrate(&mut state[i], val, |x| notify(i as _, x));
+        integrate(&mut state[i], val, |pressed| notify_change(i as _, pressed), || notify_pressed(i as _));
         reg >>= 1;
     }
 }
 
 #[inline(always)]
-pub fn integrate<F>(cnt: &mut u8, pressed: bool, mut notify: F)
+pub fn integrate<F, G>(cnt: &mut u8, pressed: bool, mut notify_change: F, mut notify_pressed: G)
 where
     F: FnMut(bool) -> (),
+    G: FnMut() -> (),
 {
     if pressed {
         if *cnt < MAX {
             *cnt += 1;
             if *cnt == FLIP {
                 *cnt = MAX + OVERSHOOT;
-                notify(true);
+                notify_change(true);
             }
         }
     } else {
@@ -59,9 +71,12 @@ where
             *cnt -= 1;
             if *cnt == FLIP {
                 *cnt = MIN;
-                notify(false);
+                notify_change(false);
             }
         }
+    }
+    if *cnt > FLIP {
+        notify_pressed();
     }
 }
 

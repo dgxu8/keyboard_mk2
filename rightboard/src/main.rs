@@ -114,7 +114,6 @@ async fn main(spawner: Spawner) -> ! {
     // Rotary Encoder
     let rot_pin_a = ExtiInput::new(p.PB14, p.EXTI14, Pull::None);
     let rot_pin_b = ExtiInput::new(p.PB13, p.EXTI13, Pull::None);
-    spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a, uart_tx)).unwrap();
 
     let flash = Flash::new_blocking(p.FLASH);
     let keymap = Keymap::new(flash, 0);
@@ -139,8 +138,9 @@ async fn main(spawner: Spawner) -> ! {
     display.clear(BinaryColor::Off).unwrap();
     display.flush().await.unwrap();
 
+    spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a, uart_tx, keymap)).unwrap();
     spawner.spawn(display_draw(display)).unwrap();
-    spawner.spawn(key_scan(keys, uart_tx)).unwrap();
+    spawner.spawn(key_scan(keys, uart_tx, keymap)).unwrap();
     spawner.spawn(run_logger(uart_tx)).unwrap();
 
     let oled = DISPLAY_DRAW.sender();

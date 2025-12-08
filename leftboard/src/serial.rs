@@ -2,10 +2,12 @@ use embassy_futures::{join::join, select::{select, Either}};
 use embassy_stm32::{mode::Async, usart::UartRx};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::Instant;
-use util::debounce;
+use static_cell::StaticCell;
+use util::keymap::KeyType;
 use embedded_io_async::Write;
 use util::cobs_uart::{bl_config, cobs_config, Clearable, CmdId, CobsBuffer, CobsRx, RspnId, SerialRx, UartTxMutex};
 
+use crate::{KeyStateMutex, KEY_CHANGE};
 use crate::{logger::bridge_rb, usb::{CdcDev, UsbRx, UsbTx}};
 
 #[derive(PartialEq, Eq, defmt::Format)]
@@ -17,9 +19,11 @@ pub enum UartState {
 
 pub static UART_STATE: Signal<CriticalSectionRawMutex, UartState> = Signal::new();
 pub static FLASH_READY: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+pub static RB_NOTIFY: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+pub static RB_KEYSTATE: StaticCell<KeyStateMutex> = StaticCell::new();
 
 #[embassy_executor::task]
-pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>, mut class: CdcDev) -> ! {
+pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>, mut class: CdcDev, key_state: &'static KeyStateMutex) -> ! {
     let mut rx_buf: [u8; 64] = [0; 64];
 
     let mut uart_rx = uart_rx.into_ring_buffered(&mut rx_buf);
@@ -29,7 +33,6 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
     uart_rx.start_uart();
     let mut recv_buf = CobsBuffer::new();
 
-    let mut full_state = [[0u8; 8]; 8];
     loop {
         match select(uart_rx.recv(&mut recv_buf), UART_STATE.wait()).await {
             Either::First(Ok(RspnId::DefmtMsg)) => {
@@ -41,14 +44,7 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
                 }
             },
             Either::First(Ok(id)) => {
-                if id == RspnId::FullState {
-                    let start = Instant::now();
-                    debounce::rb_unpack_state(&mut recv_buf, &mut full_state);
-                    let dur = Instant::now() - start;
-                    defmt::info!("Full: {}:{:?}", dur.as_micros(), full_state)
-                } else {
-                    defmt::info!("[{:?}] {:?}", id, recv_buf.as_slice());
-                }
+                handle_rb_serial(id, &recv_buf, key_state).await;
             },
             Either::First(Err(e)) => {
                 defmt::warn!("Cobs error: {:?}", e);
@@ -73,6 +69,38 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
             },
         }
         recv_buf.reset();
+    }
+}
+
+async fn handle_rb_serial(id: RspnId, buf: &CobsBuffer, key_state: &KeyStateMutex) {
+    match id {
+        RspnId::KeyChange => {
+            let mut key_state = key_state.lock().await;
+            for byte in buf.iter() {
+                let (key, pressed) = KeyType::decode_update(*byte);
+                if pressed {
+                    key_state.set(key);
+                } else {
+                    key_state.reset(key);
+                }
+            }
+            KEY_CHANGE.signal(true);
+            RB_NOTIFY.signal(true);
+        },
+        RspnId::FullState => {
+            let mut key_state = key_state.lock().await;
+            let start = Instant::now();
+            if key_state.deserialize(&buf) {
+                KEY_CHANGE.signal(true);
+            }
+            let dur = Instant::now() - start;
+            defmt::info!("Deserialization: {}us", dur.as_micros())
+        },
+        RspnId::Timestamp => {
+            let timestamp = u64::from_le_bytes(buf[..8].try_into().unwrap());
+            defmt::info!("Timestamp: {}us", timestamp);
+        },
+        id => defmt::info!("[{:?}] {:?}", id, buf.as_slice()),
     }
 }
 

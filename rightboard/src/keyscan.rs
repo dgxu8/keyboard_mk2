@@ -8,9 +8,8 @@ use embassy_sync::signal::Signal;
 use heapless::Vec;
 use static_cell::StaticCell;
 use util::debounce::{self, RB_COL_LEN, RB_ROW_LEN};
-use util::keymap::KeyType;
+use util::keymap::{FullState, KeyType};
 
-use core::hint::cold_path;
 use core::ops::Deref;
 
 use util::cobs_uart::{CobsTx, RspnId, UartTxMutex};
@@ -23,7 +22,7 @@ pub static KEYS: StaticCell<Keyscan> = StaticCell::new();
 
 #[task_profiler::profile]
 #[embassy_executor::task]
-pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartTxMutex) {
+pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static UartTxMutex, keymap: &'static KeymapMutex) {
 
     let oled = DISPLAY_DRAW.sender();
     let mut ticker = Ticker::every(Duration::from_millis(1));
@@ -35,20 +34,21 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
         // If we get more than 8 changes send a full keystate scan
         let start: Instant = Instant::now();
         task_profiler::set!();
+        let mut full_state = FullState::new();
 
-        alt_en = ALT_EN.try_take().unwrap_or(alt_en);
-        keys.scan(&mut update, alt_en);
+        alt_en = ALT_EN.try_take().unwrap_or(alt_en);  // Handle tap dance/hold to enable alt state
+        {
+            let keymap = keymap.lock().await;
+            keys.scan(&mut full_state, &mut update, alt_en, &keymap);
+        }
 
-        if REPORT_FULL.try_take().is_some() || update.overflow {
-            cold_path();
-
-            let state_id = if keys.alt_en {RspnId::AltState} else {RspnId::FullState};
+        if REPORT_FULL.try_take().is_some() || update.overflow || keys.alt_en != prev_alt {
+            // Send full key state if we switch alt state in case a numkey is being pressed
             let mut uart_tx = uart_tx.lock().await;
-            uart_tx.send(RspnId::Timestamp, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
-            let full_state = debounce::rb_pack_state(&keys.state);
-            uart_tx.send(state_id, full_state.as_slice()).await.unwrap();
+            let full_state = full_state.serialize();
+            uart_tx.send(RspnId::FullState, full_state.as_slice()).await.unwrap();
             task_profiler::print!();
-        } else if !update.is_empty() {
+        } else if update.populate_update(&full_state) {
             let mut uart_tx = uart_tx.lock().await;
             uart_tx.send(RspnId::Timestamp, start.as_micros().to_le_bytes().as_slice()).await.unwrap();
             uart_tx.send(RspnId::KeyChange, update.as_slice()).await.unwrap();
@@ -57,7 +57,6 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
         if keys.alt_en != prev_alt {
             oled.send(Draw::Numlock(keys.alt_en)).await;
             prev_alt = keys.alt_en;
-            task_profiler::print!();
         }
         update.clear();
         ticker.next().await;
@@ -65,39 +64,67 @@ pub async fn key_scan(keys: &'static mut Keyscan<'static>, uart_tx: &'static Uar
 }
 
 struct KeyUpdate {
-    vec: Vec<u8, 8>,
+    update: Vec<u8, 8>,
+    inter: Vec<(KeyType, bool), 8>,
     overflow: bool,
 }
 
 impl KeyUpdate {
     #[inline(always)]
-    fn new() -> KeyUpdate {
+    fn new() -> Self {
         KeyUpdate {
-            vec: Vec::new(),
+            update: Vec::new(),
+            inter: Vec::new(),
             overflow: false,
         }
     }
     #[inline(always)]
     fn clear(&mut self) {
-        self.vec.clear();
+        self.update.clear();
+        self.inter.clear();
         self.overflow = false;
     }
-    //    7     6-4     3-1     0
-    // +-----+--------+-----+-------+
-    // | Alt | Column | Row | State |
-    // +-----+--------+-----+-------+
+
     #[inline(always)]
-    fn push(&mut self, alt_en: bool, col: u8, row: u8, state: u8) {
-        if !self.overflow && self.vec.push((alt_en as u8) << 7 | col << 4 | row << 1 | state).is_err() {
-            self.overflow = true;
+    fn push(&mut self, keymap: &Keymap, alt_en: bool, col: usize, row: usize, state: bool) -> KeyType {
+        if self.overflow {
+            return KeyType::NoCode;
         }
+
+        let val = keymap.map(col, row, alt_en);
+        if val != KeyType::NoCode {
+            if self.inter.push((val, state)).is_err() {
+                self.overflow = true;
+            }
+            val
+        } else {
+            KeyType::NoCode
+        }
+    }
+
+    /// Take the intermediary and populated the update vector
+    ///
+    /// Returns true if an update is available
+    #[inline(always)]
+    fn populate_update(&mut self, full_state: &FullState) -> bool {
+        self.update = self.inter.iter().filter_map(|(key, pressed)| {
+            let is_pressed = full_state.is_set(*key);
+            if *pressed == is_pressed
+                && let Ok(k) = key.encode_update(*pressed)
+            {
+                Some(k)
+            } else {
+                None
+            }
+        }).collect();
+        !self.update.is_empty()
     }
 }
 
 impl Deref for KeyUpdate {
     type Target = Vec<u8, 8>;
     fn deref(&self) -> &Self::Target {
-        &self.vec
+        &self.update
     }
 }
 
@@ -142,21 +169,29 @@ impl<'a> Keyscan<'a> {
         (pac::GPIOA.idr().read().0 >> 8) & 0xFF
     }
 
-    fn scan(&mut self, update: &mut KeyUpdate, alt_en: bool) {
+    fn scan(&mut self, full_state: &mut FullState, update: &mut KeyUpdate, alt_en: bool, keymap: &Keymap) {
         self.alt_en = alt_en || self.toggle.is_high();
+        let alt_en = self.alt_en;
         for col in 0..RB_COL_LEN {
             self.set_raw(col as _);
             let reg = self.read_raw();
             let end = if col < 3 {RB_ROW_LEN-1} else {RB_ROW_LEN};
-            let notify = |row, state| update.push(self.alt_en, col as u8, row, state as u8);
-            debounce::debounce(&mut self.state[col][..end], reg, notify);
+            let notify_change = |row, state| {
+                match update.push(keymap, self.alt_en, col as usize, row as usize, state) {
+                    KeyType::EnableNum => self.alt_en |= state,
+                    _ => (),
+                };
+            };
+            let notify_pressed = |row| full_state.set(keymap.map(col as _, row as _, alt_en));
+            debounce::debounce(&mut self.state[col][..end], reg, notify_change, notify_pressed);
         }
-        let notify = |state| update.push(self.alt_en, 0, 7, state as u8);
-        debounce::integrate(&mut self.state[0][7], self.enc_btn.is_low(), notify);
+        let notify_change = |state| {update.push(keymap, self.alt_en, 0, 7, state as bool);};
+        let notify_pressed = || full_state.set(keymap.map(0, 7, self.alt_en));
+        debounce::integrate(&mut self.state[0][7], self.enc_btn.is_low(), notify_change, notify_pressed);
     }
 }
 
-
+const NUM_ROW_BOT: usize = 0;
 const NUM_ROW_LEN: usize = 7;
 const NUM_COL_LEN: usize = 3;
 
@@ -215,5 +250,13 @@ impl<'a> Keymap<'a> {
         self.keymap.ccw = KeyType::try_from(&buff[..2])?;
         self.keymap.cw = KeyType::try_from(&buff[2..])?;
         Ok(())
+    }
+    #[inline(always)]
+    pub fn map(&self, col: usize, row: usize, alt_en: bool) -> KeyType {
+        if alt_en && col < NUM_COL_LEN &&  row > NUM_ROW_BOT && row < NUM_ROW_LEN {
+            self.keymap.numpad[col][row]
+        } else {
+            self.keymap.right[col][row]
+        }
     }
 }

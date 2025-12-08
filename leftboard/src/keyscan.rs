@@ -4,22 +4,34 @@ use embassy_stm32::{flash::{Bank1Region, Blocking}, gpio::{Input, Output}, pac};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Instant, Ticker};
 use static_cell::StaticCell;
-use util::{debounce, keymap::KeyType};
+use util::{debounce, keymap::{FullState, KeyType}};
+use util::cobs_uart::{CmdId, CobsTx, UartTxMutex};
+
+use crate::{KeyStateMutex, KEY_CHANGE};
 
 static ROW_LEN: usize = 5;
 static COL_LEN: usize = 8;
 
+pub static LB_KEYSTATE: StaticCell<KeyStateMutex> = StaticCell::new();
+
 #[embassy_executor::task]
-pub async fn run(mut keys: Keyscan<'static>, keymap: &'static KeymapMutex) {
+pub async fn run(mut keys: Keyscan<'static>, keymap: &'static KeymapMutex, key_state: &'static KeyStateMutex, uart_tx: &'static UartTxMutex) {
     let mut ticker = Ticker::every(Duration::from_millis(1));
     loop {
         let start = Instant::now();
-        let change =  {
+        let (change, enable_num) =  {
+            let mut state = key_state.lock().await;
+            state.clear();
             let mut keymap = keymap.lock().await;
-            keys.scan(&mut keymap)
+            keys.scan(&mut state, &mut keymap)
         };
         let dur = Instant::now() - start;
+        if let Some(alt_en) = enable_num {
+            let mut uart_tx = uart_tx.lock().await;
+            uart_tx.send(CmdId::AltEnable, &[alt_en as u8]).await.unwrap();
+        }
         if change {
+            KEY_CHANGE.signal(true);
             defmt::info!("Keyscan time: {}", dur.as_micros());
         }
         ticker.next().await;
@@ -56,22 +68,32 @@ impl<'a> Keyscan<'a> {
         (pac::GPIOB.idr().read().0 >> 3) & 0xFF
     }
 
-    // fn scan(&mut self, update: &mut Vec<u8, 8>) {
     #[inline(always)]
-    fn scan(&mut self, keymap: &mut Keymap) -> bool {
+    fn scan(&mut self, key_state: &mut FullState, keymap: &mut Keymap) -> (bool, Option<bool>) {
         let mut change = false;
+        let mut enable_num = None;
         // We enter here w/ decoder set to col zero
         for col in 0..8 {
-            let notify = |row, state| {
-                defmt::info!("{}: {}", keymap.map[col as usize][row as usize], state);
-                change = true;
+            let notify_change = |row, pressed| {
+                match keymap.map[col as usize][row as usize] {
+                    // Maybe just remove this? who cares if we trigger a read?
+                    KeyType::NoCode => (),
+                    // Bug here if multiple keys are EnableNum. If both are pressed this could
+                    // flip if one is released (depends on scan order).
+                    KeyType::EnableNum => enable_num = Some(pressed),
+                    _ => change = true,
+                }
+            };
+            let notify_pressed = |row| {
+                key_state.set(keymap.map[col as usize][row as usize]);
             };
             let reg = self.read_raw();
             // Set next decoder for next column so it has time to propagate
             self.set_raw((col+1) as u32);
-            debounce::debounce(&mut self.state[col], reg, notify);
+            debounce::debounce(&mut self.state[col], reg, notify_change, notify_pressed);
         }
-        change
+
+        (change, enable_num)
     }
 }
 

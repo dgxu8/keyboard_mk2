@@ -15,6 +15,7 @@ use defmt;
 
 use embassy_executor::Spawner;
 use embassy_futures::join;
+use embassy_futures::select::select;
 use embassy_stm32::flash::Flash;
 use embassy_stm32::rcc::mux::Clk48sel;
 use embassy_stm32::rcc::{Hsi48Config, Pll, PllMul, PllPreDiv, PllRDiv, PllSource, Sysclk};
@@ -22,13 +23,17 @@ use embassy_stm32::usart::Uart;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, Config};
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use static_cell::StaticCell;
-use util::cobs_uart::{cobs_config, UartTxMutex};
+use util::cobs_uart::{cobs_config, CmdId, CobsTx, UartTxMutex};
+use util::keymap::FullState;
 
-use crate::keyscan::{Keymap, Keyscan, KEYMAP};
-use crate::usb::{init_usb, MyRequestHandler, NKROKeyboardReport};
+use crate::keyscan::{Keymap, Keyscan, KEYMAP, LB_KEYSTATE};
+use crate::serial::{RB_KEYSTATE, RB_NOTIFY};
+use crate::usb::{init_usb, HidRqstHndlr, NKROKeyboardReport, CAPS_LOCK};
 use crate::usb_com::CoprocCtrl;
 
 bind_interrupts!(struct USBIrqs {
@@ -45,6 +50,9 @@ unsafe extern "C" {
     static __keymap_start: u32;
     static __keymap_end: u32;
 }
+
+pub type KeyStateMutex = Mutex<CriticalSectionRawMutex, FullState>;
+static KEY_CHANGE: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -120,53 +128,67 @@ async fn main(spawner: Spawner) {
     let keymap = Keymap::new(flash, keymap_start, keymap_end);
     let keymap = KEYMAP.init(Mutex::new(keymap));
 
+    let rb_state = RB_KEYSTATE.init(Mutex::new(FullState::new()));
+    let lb_state = LB_KEYSTATE.init(Mutex::new(FullState::new()));
+
     defmt::info!("Boot time: {}us", Instant::now().as_micros());
     Timer::after_millis(5).await;
     rb_ctrl.n_rst.set_high();
 
     spawner.spawn(logger::run(defmt_out)).unwrap();
     spawner.spawn(usb_com::run(acm0_in, uart_tx, rb_ctrl, keymap)).unwrap();
-    spawner.spawn(serial::run(uart_tx, uart_rx, acm1)).unwrap();
-    spawner.spawn(keyscan::run(keys, keymap)).unwrap();
+    spawner.spawn(serial::run(uart_tx, uart_rx, acm1, rb_state)).unwrap();
+    spawner.spawn(keyscan::run(keys, keymap, lb_state, uart_tx)).unwrap();
 
     let blink_fut = async {
-        let mut keycode = [0; 13];
         loop {
+            KEY_CHANGE.wait().await;
             led1.toggle();
-            Timer::after_millis(1500).await;
-
-            keycode[10] = 1 << 3;
-            defmt::info!("Key: {}", keycode[10]);
-            // keycode[10] = 1 << KeyboardUsage::KeyboardAa as u8;
-            let report = NKROKeyboardReport {
-                keycodes: keycode,
-                leds: 0,
-                modifier: 0,
-                reserved: 0,
+            let report = {
+                let lb_state = lb_state.lock().await;
+                let rb_state = rb_state.lock().await;
+                NKROKeyboardReport {
+                    keycodes: lb_state.merge(&rb_state),
+                    leds: 0,
+                    modifier: lb_state.modifier | rb_state.modifier,
+                    reserved: 0,
+                }
             };
             match writer.write_serialize(&report).await {
                 Ok(()) => {},
                 Err(e) => defmt::warn!("Error sending key {:?}", e as u8),
             };
-            Timer::after_millis(100).await;
-            keycode[10] = 0;
-            let report = NKROKeyboardReport {
-                keycodes: keycode,
-                leds: 0,
-                modifier: 0,
-                reserved: 0,
-            };
-            match writer.write_serialize(&report).await {
-                Ok(()) => {},
-                Err(e) => defmt::warn!("Error no sending key {:?}", e as u8),
-            };
         }
     };
-    let mut rqst_handler = MyRequestHandler {};
+    let poll_state_fut = async {
+        loop {
+            RB_NOTIFY.wait().await;
+            while select(RB_NOTIFY.wait(), Timer::after_millis(500)).await.is_first() {};
+            let any_pressed = async {
+                let rb_state = rb_state.lock().await;
+                rb_state.any_set()
+            }.await;
+            if any_pressed {
+                {
+                    let mut uart_tx = uart_tx.lock().await;
+                    _ = uart_tx.send(CmdId::GetState, &[]).await;
+                }
+                Timer::after_secs(5).await;  // Unlikely to need to correct the state
+            }
+        }
+    };
+    let mut rqst_handler = HidRqstHndlr {};
     let out_fut = async {
         reader.run(true, &mut rqst_handler).await;
     };
-    join::join3(usb_fut, blink_fut, out_fut).await;
+    let caps_handler = async {
+        loop {
+            let state = CAPS_LOCK.wait().await;
+            let mut uart_tx = uart_tx.lock().await;
+            uart_tx.send(CmdId::Capslock, &[state]).await.unwrap();
+        }
+    };
+    join::join5(usb_fut, blink_fut, out_fut, poll_state_fut, caps_handler).await;
 }
 
 #[inline(always)]

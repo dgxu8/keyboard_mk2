@@ -1,6 +1,7 @@
 use core::{cmp, sync::atomic::{AtomicBool, Ordering}};
 
 use embassy_stm32::{peripherals::USB, usb::Driver};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_usb::{class::{cdc_acm::{self, CdcAcmClass, Receiver, Sender}, hid::{self, HidReaderWriter, ReportId, RequestHandler}}, control::OutResponse, driver::{self, EndpointError}, Builder, Handler, UsbDevice};
 use static_cell::StaticCell;
 use usbd_hid::{descriptor::*};
@@ -36,6 +37,8 @@ pub struct NKROKeyboardReport {
     pub leds: u8,
     pub keycodes: [u8; 13],
 }
+
+pub static CAPS_LOCK: Signal<CriticalSectionRawMutex, u8> = Signal::new();
 
 static CFG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static CTRL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
@@ -117,9 +120,9 @@ impl<'a, D: driver::Driver<'a>> UsbSerial for Sender<'a, D> {
     }
 }
 
-pub struct MyRequestHandler {}
+pub struct HidRqstHndlr;
 
-impl RequestHandler for MyRequestHandler {
+impl RequestHandler for HidRqstHndlr {
     fn get_report(&mut self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
         defmt::info!("get_report id: {:?}", id);
         None
@@ -127,6 +130,12 @@ impl RequestHandler for MyRequestHandler {
 
     fn set_report(&mut self, id: ReportId, _data: &[u8]) -> OutResponse {
         defmt::info!("set_report: {:?}", id);
+        match id {
+            ReportId::Out(id) => {
+                CAPS_LOCK.signal((id & 0x2) >> 1);
+            },
+            _ => (),
+        }
         OutResponse::Accepted
     }
 

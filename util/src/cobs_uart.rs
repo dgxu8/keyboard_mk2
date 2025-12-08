@@ -79,6 +79,7 @@ pub enum RspnId {
     Nak = 1,
 
     // Triggered via CmdId::GetState
+    // Returns: Keycode | Mediakey (Mute, VolInc, VolDec) | Modifier 101 + 3 + 8 = 112 (14 bytes)
     FullState = 2,
     AltState = 3,
 
