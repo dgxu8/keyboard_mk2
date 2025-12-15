@@ -40,30 +40,29 @@ pub fn rb_unpack_state(buf: &[u8], state: &mut [[u8; RB_ROW_LEN]; RB_COL_LEN]) {
 /// If "coproc" feature is set, notify will be called on changes in state. If it isn't set then
 /// notify is called on all keys that are pressed.
 #[inline(always)]
-pub fn debounce<F, G>(state: &mut [u8], mut reg: u32, mut notify_change: F, mut notify_pressed: G)
+pub fn debounce<F>(state: &mut [u8], mut reg: u32, mut notify: F)
 where
-    F: FnMut(u8, bool) -> (),
-    G: FnMut(u8) -> (),
+    F: FnMut(u8, bool, bool) -> (),
 {
     for i in 0..state.len() {
         let val = reg & 0x1 != 0;
-        integrate(&mut state[i], val, |pressed| notify_change(i as _, pressed), || notify_pressed(i as _));
+        integrate(&mut state[i], val, |pressed, changed| notify(i as _, pressed, changed));
         reg >>= 1;
     }
 }
 
 #[inline(always)]
-pub fn integrate<F, G>(cnt: &mut u8, pressed: bool, mut notify_change: F, mut notify_pressed: G)
+pub fn integrate<F>(cnt: &mut u8, pressed: bool, mut notify: F)
 where
-    F: FnMut(bool) -> (),
-    G: FnMut() -> (),
+    F: FnMut(bool, bool) -> (),
 {
+    let mut changed = false;
     if pressed {
         if *cnt < MAX {
             *cnt += 1;
             if *cnt == FLIP {
                 *cnt = MAX + OVERSHOOT;
-                notify_change(true);
+                changed = true;
             }
         }
     } else {
@@ -71,12 +70,12 @@ where
             *cnt -= 1;
             if *cnt == FLIP {
                 *cnt = MIN;
-                notify_change(false);
+                changed = true;
             }
         }
     }
-    if *cnt > FLIP {
-        notify_pressed();
+    if *cnt > FLIP || changed {
+        notify(*cnt > FLIP, changed);
     }
 }
 

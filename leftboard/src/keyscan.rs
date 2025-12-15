@@ -74,23 +74,26 @@ impl<'a> Keyscan<'a> {
         let mut enable_num = None;
         // We enter here w/ decoder set to col zero
         for col in 0..8 {
-            let notify_change = |row, pressed| {
-                match keymap.map[col as usize][row as usize] {
-                    // Maybe just remove this? who cares if we trigger a read?
-                    KeyType::NoCode => (),
-                    // Bug here if multiple keys are EnableNum. If both are pressed this could
-                    // flip if one is released (depends on scan order).
-                    KeyType::EnableNum => enable_num = Some(pressed),
-                    _ => change = true,
+            let notify = |row, pressed, changed| {
+                let key = keymap.map[col as usize][row as usize];
+                if changed {
+                    match key {
+                        // Maybe just remove this? who cares if we trigger a read?
+                        KeyType::NoCode => (),
+                        // Bug here if multiple keys are EnableNum. If both are pressed this could
+                        // flip if one is released (depends on scan order).
+                        KeyType::EnableNum => enable_num = Some(pressed),
+                        _ => change = true,
+                    }
                 }
-            };
-            let notify_pressed = |row| {
-                key_state.set(keymap.map[col as usize][row as usize]);
+                if pressed {
+                    key_state.set(key);
+                }
             };
             let reg = self.read_raw();
             // Set next decoder for next column so it has time to propagate
             self.set_raw((col+1) as u32);
-            debounce::debounce(&mut self.state[col], reg, notify_change, notify_pressed);
+            debounce::debounce(&mut self.state[col], reg, notify);
         }
 
         (change, enable_num)

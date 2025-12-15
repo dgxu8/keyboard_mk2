@@ -86,19 +86,13 @@ impl KeyUpdate {
     }
 
     #[inline(always)]
-    fn push(&mut self, keymap: &Keymap, alt_en: bool, col: usize, row: usize, state: bool) -> KeyType {
+    fn push(&mut self, keycode: KeyType, state: bool) {
         if self.overflow {
-            return KeyType::NoCode;
+            return;
         }
 
-        let val = keymap.map(col, row, alt_en);
-        if val != KeyType::NoCode {
-            if self.inter.push((val, state)).is_err() {
-                self.overflow = true;
-            }
-            val
-        } else {
-            KeyType::NoCode
+        if self.inter.push((keycode, state)).is_err() {
+            self.overflow = true;
         }
     }
 
@@ -176,18 +170,35 @@ impl<'a> Keyscan<'a> {
             self.set_raw(col as _);
             let reg = self.read_raw();
             let end = if col < 3 {RB_ROW_LEN-1} else {RB_ROW_LEN};
-            let notify_change = |row, state| {
-                match update.push(keymap, self.alt_en, col as usize, row as usize, state) {
-                    KeyType::EnableNum => self.alt_en |= state,
-                    _ => (),
-                };
+            let notify =  |row, pressed, changed| {
+                let key = keymap.map(col as usize, row as usize, alt_en);
+                if changed {
+                    match key {
+                        KeyType::EnableNum => self.alt_en |= pressed,
+                        KeyType::NoCode => (),
+                        _ => update.push(key, pressed),
+                    }
+                }
+                if pressed {
+                    full_state.set(key);
+                }
             };
-            let notify_pressed = |row| full_state.set(keymap.map(col as _, row as _, alt_en));
-            debounce::debounce(&mut self.state[col][..end], reg, notify_change, notify_pressed);
+            debounce::debounce(&mut self.state[col][..end], reg, notify);
         }
-        let notify_change = |state| {update.push(keymap, self.alt_en, 0, 7, state as bool);};
-        let notify_pressed = || full_state.set(keymap.map(0, 7, self.alt_en));
-        debounce::integrate(&mut self.state[0][7], self.enc_btn.is_low(), notify_change, notify_pressed);
+        let notify =  |state, changed| {
+            let keycode = keymap.map(0, 7, alt_en);
+            if changed {
+                match keycode {
+                    KeyType::EnableNum => self.alt_en |= state,
+                    KeyType::NoCode => (),
+                    _ => update.push(keycode, state),
+                }
+            }
+            if state {
+                full_state.set(keycode);
+            }
+        };
+        debounce::integrate(&mut self.state[0][7], self.enc_btn.is_low(), notify);
     }
 }
 
