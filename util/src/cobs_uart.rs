@@ -24,6 +24,28 @@ pub fn bl_config() -> Config {
     config
 }
 
+/// Helper function to COBS encode a payload.
+#[inline(always)]
+pub fn encode_cobs(id: u8, payload: &[u8]) -> Result<SerialBuffer, Error> {
+    assert_ne!(id, ACK);
+    // Note: Cannot pass in ack, results in undefined state, which is why it's unsafe
+    let mut packet: SerialBuffer = unsafe {
+        // We know the size going into SerialBuffer
+        Vec::from_slice(&[2, id]).unwrap_unchecked()
+    };
+    let mut overhead_idx = 0;
+    for byte in payload {
+        let byte = *byte;
+        if byte == 0 {
+            overhead_idx = packet.len();
+        }
+        packet.push(byte)?;
+        packet[overhead_idx] += 1;
+    }
+    packet.push(0)?;
+    Ok(packet)
+}
+
 #[derive(Debug, PartialEq, Eq, defmt::Format)]
 pub enum Error {
     UsartError(usart::Error),
@@ -139,43 +161,56 @@ type WriteType = RspnId;
 
 #[trait_variant::make(Send)]  // Needed for public async trait
 pub trait CobsTx {
+    async fn write_slice(&mut self, slice: &[u8]);
     async fn send_ack(&mut self, id: u8);
     async fn send_nack(&mut self, id: u8);
     async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error>;
+    async fn write_blocks(&mut self, id: u8, payload: &[u8]) -> Result<(), Error>;
     async fn send(&mut self, id: WriteType, payload: &[u8]) -> Result<(), Error>;
 }
 
 impl<'a> CobsTx for UartTx<'a, Async> {
+    #[inline(always)]
+    async fn write_slice(&mut self, slice: &[u8]) {
+        // self.write_all() cannot error when used with embassy_stm32 uart
+        unsafe { self.write_all(slice).await.unwrap_unchecked() };
+    }
     async fn send_ack(&mut self, id: u8) {
         assert_ne!(id, ACK);
         let ack: [u8; 4] = [0x1, 0x2, id, 0x0];
-        // self.write_all() cannot error when used with embassy_stm32 uart
-        unsafe { self.write_all(ack.as_slice()).await.unwrap_unchecked() };
+        self.write_slice(ack.as_slice()).await;
     }
     async fn send_nack(&mut self, id: u8) {
         assert_ne!(id, ACK);
         let ack: [u8; 4] = [0x3, NAK, id as _, 0x0];
-        // self.write_all() cannot error when used with embassy_stm32 uart
-        unsafe { self.write_all(ack.as_slice()).await.unwrap_unchecked() };
+        self.write_slice(ack.as_slice()).await;
     }
     async fn write_cobs(&mut self, id: u8, payload: &[u8]) -> Result<(), Error> {
+        let packet = encode_cobs(id, payload)?;
+        self.write_slice(packet.as_slice()).await;
+        Ok(())
+    }
+    async fn write_blocks(&mut self, id: u8, payload: &[u8]) -> Result<(), Error> {
         assert_ne!(id, ACK);
+        // Note: Cannot pass in ack, results in undefined state, which is why it's unsafe
         let mut packet: SerialBuffer = unsafe {
             // We know the size going into SerialBuffer
             Vec::from_slice(&[2, id]).unwrap_unchecked()
         };
-        let mut overhead_idx = 0;
+        let overhead_idx = 0;
         for byte in payload {
             let byte = *byte;
             if byte == 0 {
-                overhead_idx = packet.len();
+                self.write_slice(packet.as_slice()).await;
+                packet.clear();
+                // We know this is safe since we just cleared it
+                unsafe { packet.push_unchecked(0) };
             }
             packet.push(byte)?;
             packet[overhead_idx] += 1;
         }
         packet.push(0)?;
-        // self.write_all() cannot error when used with embassy_stm32 uart
-        unsafe { self.write_all(packet.as_slice()).await.unwrap_unchecked() };
+        self.write_slice(packet.as_slice()).await;
         Ok(())
     }
     #[inline(always)]

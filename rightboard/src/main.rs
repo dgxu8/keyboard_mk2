@@ -1,14 +1,15 @@
 #![no_std]
 #![no_main]
-#![feature(cold_path)]
-#![feature(likely_unlikely)]
 #![feature(impl_trait_in_assoc_type)]
+#![feature(if_let_guard)]
 
 extern crate panic_halt;
 
 pub mod keyscan;
 pub mod rotary;
 pub mod display;
+
+use core::sync::atomic::Ordering;
 
 use embassy_futures::select::{select, Either};
 use embassy_stm32::exti::ExtiInput;
@@ -36,7 +37,7 @@ use util::cobs_uart::{self, cobs_config, CmdId, CobsBuffer, CobsRx, CobsTx, Rspn
 use util::logger::BUFFER;
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
-use crate::keyscan::{key_scan, Keymap, Keyscan, ALT_EN, KEYMAP, KEYS, REPORT_FULL};
+use crate::keyscan::{ALT_HOLD, KEY_STATE, KEYMAP, KEYS, KeyMatrix, KeyScan, Keymap, KeymapMutex, REPORT_FULL};
 use crate::display::{display_draw, Draw, DISPLAY_DRAW, OLED_STR};
 
 bind_interrupts!(struct UsartIrqs {
@@ -81,13 +82,16 @@ async fn main(spawner: Spawner) -> ! {
         Input::new(p.PA15, Pull::Down),
     ];
 
-    let keys = Keyscan::new(
+    let keys = KeyMatrix::new(
         key_select_pins,
         Output::new(p.PA4, Level::High, Speed::High),
         key_inputs,
         Input::new(p.PB15, Pull::None),
-        Input::new(p.PB0, Pull::Down),
     );
+
+    // Stuffing this in a static cell and passing the reference to it is better performance for
+    // some reason (compared to just passing the struct in). inline the scan seems to help though.
+    let keys = KEYS.init(keys);
 
     // Configure usart default:
     // baudrate: 115200,
@@ -109,15 +113,13 @@ async fn main(spawner: Spawner) -> ! {
     static UART_TX: StaticCell<UartTxMutex> = StaticCell::new();
     let uart_tx = UART_TX.init(Mutex::new(uart_tx));
 
-    let keys = KEYS.init(keys);
-
     // Rotary Encoder
     let rot_pin_a = ExtiInput::new(p.PB14, p.EXTI14, Pull::None);
     let rot_pin_b = ExtiInput::new(p.PB13, p.EXTI13, Pull::None);
 
     let flash = Flash::new_blocking(p.FLASH);
     let keymap = Keymap::new(flash, 0);
-    let keymap = KEYMAP.init(Mutex::new(keymap));
+    let keymap = KEYMAP.init(KeymapMutex::new(keymap));
 
     const RX_BUF_SIZE: usize = 32;
     let mut rx_buf: [u8; RX_BUF_SIZE] = [0; RX_BUF_SIZE];
@@ -138,12 +140,18 @@ async fn main(spawner: Spawner) -> ! {
     display.clear(BinaryColor::Off).unwrap();
     display.flush().await.unwrap();
 
+    let key_state = KeyScan::new(Input::new(p.PB0, Pull::Down));
+    let key_state = KEY_STATE.init(key_state);
+    let oled = DISPLAY_DRAW.sender();
+    if key_state.alt_en {
+        oled.send(Draw::Numlock(true)).await;
+    }
+
     spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a, uart_tx, keymap)).unwrap();
     spawner.spawn(display_draw(display)).unwrap();
-    spawner.spawn(key_scan(keys, uart_tx, keymap)).unwrap();
+    spawner.spawn(keyscan::run(keys, uart_tx, keymap, key_state)).unwrap();
     spawner.spawn(run_logger(uart_tx)).unwrap();
 
-    let oled = DISPLAY_DRAW.sender();
 
     led1.set_low();
     let mut recv_buf = CobsBuffer::new();
@@ -151,8 +159,8 @@ async fn main(spawner: Spawner) -> ! {
         match select(uart_rx.recv(&mut recv_buf), ENCODER_STATE.wait()).await {
             Either::First(Ok(id)) => {
                 match id {
-                    CmdId::AltEnable => ALT_EN.signal(recv_buf[0] == 1),
-                    CmdId::GetState => REPORT_FULL.signal(true),
+                    CmdId::AltEnable => ALT_HOLD.store(recv_buf[0] == 1, Ordering::Relaxed),
+                    CmdId::GetState => REPORT_FULL.signal(()),
                     CmdId::Capslock  => oled.send(Draw::Capslock(recv_buf[0] == 1)).await,
                     CmdId::Volume  => oled.send(Draw::Volume(recv_buf[0])).await,
                     CmdId::OLEDMsg => {
@@ -170,27 +178,24 @@ async fn main(spawner: Spawner) -> ! {
                     },
                     CmdId::SaveKeymap => {
                         defmt::info!("Saving rightboard");
-                        let mut map = keymap.lock().await;
-                        map.save();
+                        unsafe { keymap.lock_mut(|map| map.save()) };
                     },
                     CmdId::ClearKeymap => {
                         defmt::info!("Clearing rightboard");
-                        let mut map = keymap.lock().await;
-                        map.clear();
+                        unsafe { keymap.lock_mut(|map| map.clear()) };
                     },
                     CmdId::UpdateKeymap => {
-                        let mut map = keymap.lock().await;
-                        map.update_right(&recv_buf);
+                        unsafe { keymap.lock_mut(|map| map.update_right(&recv_buf)) };
                     },
                     CmdId::UpdateAltKeymap => {
-                        let mut map = keymap.lock().await;
-                        map.update_numpad(&recv_buf);
+                        unsafe { keymap.lock_mut(|map| map.update_numpad(&recv_buf)) };
                     },
                     CmdId::UpdateRotary => {
-                        let mut map = keymap.lock().await;
-                        if map.update_rotary(&recv_buf).is_err() {
-                            defmt::warn!("Failed to update rotary binds");
-                        }
+                        unsafe { keymap.lock_mut(|map| {
+                            if map.update_rotary(&recv_buf).is_err() {
+                                defmt::warn!("Failed to update rotary binds");
+                            }
+                        })};
                     }
                     _ => (),
                 }

@@ -1,12 +1,17 @@
 use core::{cmp::Ordering, usize};
 use heapless::Vec;
 
+#[cfg(feature = "coproc")]
+use crate::cobs_uart::{CobsTx, RspnId, SerialTx};
+
 #[derive(PartialEq, Eq, Clone, Copy, defmt::Format)]
 #[derive(Default)]
 pub enum KeyType {
     Keycode(u8),
     Mediacode(u8),
     EnableNum,
+    TapDanceDisableNum(u8),  // Tap dance into arrow keys (holds the keybind in the normal state)
+    HoldEnableNum(u8),  // Hold into numbers (holds the keybind in the normal state)
     #[default]
     NoCode,
 }
@@ -20,6 +25,7 @@ impl TryFrom<&[u8]> for KeyType {
             (1, code) => Ok(KeyType::Mediacode(code)),
             (2, 0) => Ok(KeyType::EnableNum),
             (2, 1) => Ok(KeyType::NoCode),
+            (3, code) => Ok(KeyType::HoldEnableNum(code)),
             _ => Err(()),
         }
     }
@@ -75,6 +81,10 @@ pub struct FullState {
     pub key: Vec<u8, 14>,  // Sized 1 bigger so we can send it over serial
     pub modifier: u8,
     pub audio: u8,
+}
+
+impl Default for FullState {
+    fn default() -> Self { FullState::new() }
 }
 
 impl FullState {
@@ -164,6 +174,28 @@ impl FullState {
     }
 
     #[inline(always)]
+    pub fn set_test(&mut self, key: KeyType) {
+        match key {
+            KeyType::Keycode(val) if val < 0x66 => {
+                self.key[val as usize / 8] |= 1 << (val % 8);
+            },
+            KeyType::Keycode(val) if val >= 0xE0 && val <= 0xE7 => {
+                self.modifier |= 1 << (val - 0xE0);
+            },
+            KeyType::Mediacode(val) if val == 0xE2 => {
+                self.audio |= 1 << 0;
+            },
+            KeyType::Mediacode(val) if val == 0xE9 => {
+                self.audio |= 1 << 1;
+            },
+            KeyType::Mediacode(val) if val == 0xEA => {
+                self.audio |= 1 << 2;
+            },
+            _ => (),
+        }
+    }
+
+    #[inline(always)]
     pub fn reset(&mut self, key: KeyType) {
         match key {
             KeyType::Keycode(val) if val < 0x66 => {
@@ -191,6 +223,23 @@ impl FullState {
         // There will always have been a free space at the end
         unsafe { self.key.push_unchecked(self.modifier); }
         self.key
+    }
+
+    #[inline(always)]
+    pub fn serialize_slice(&mut self) -> &[u8] {
+        self.key[12] |= self.audio << 5;  // Pack audio keycode
+        // There will always have been a free space at the end
+        unsafe { self.key.push_unchecked(self.modifier); }
+        self.key.as_slice()
+    }
+
+    #[cfg(feature = "coproc")]
+    #[inline(always)]
+    pub async fn serialize_send(&mut self, tx: &mut SerialTx<'_>) {
+        self.key[12] |= self.audio << 5;  // Pack audio keycode
+        // There will always have been a free space at the end
+        unsafe { self.key.push_unchecked(self.modifier); }
+        tx.send(RspnId::FullState, self.key.as_slice()).await.unwrap();
     }
 
     #[inline(always)]

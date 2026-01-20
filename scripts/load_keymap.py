@@ -3,6 +3,7 @@ import serial
 import struct
 import time
 import yaml
+import re
 try:
     from yaml import CLoader as Loader, CDumper as Dumper
 except ImportError:
@@ -18,6 +19,9 @@ UPDATE_ROTARY = b"\x0B"
 KEYCODE_ID = 0
 CONSUMER_ID = 1
 CUSTOM_ID = 2
+HOLD_ID = 3
+
+HOLD_STR = "HOLD_ALT"
 
 keycodes = {
   "A": 0x04,
@@ -163,6 +167,10 @@ def flatten_and_sort(keymap, coordmap):
 
 
 def map_code(handle):
+    match = re.match(r"(\S+)\((\S+)\)", str(handle))
+    if match is not None:
+        handle = match.group(2)
+
     if handle in keycodes:
         category = KEYCODE_ID
         hexcode = keycodes[handle]
@@ -174,6 +182,10 @@ def map_code(handle):
         hexcode = custom_codes[handle]
     else:
         raise KeyError(f"Invalid key: {handle}")
+
+    if match is not None and match.group(1) == HOLD_STR:
+        category = HOLD_ID
+
     return struct.pack("<BB", category, hexcode)
 
 

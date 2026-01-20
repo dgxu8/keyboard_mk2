@@ -20,13 +20,11 @@ type Encoder = Rotary<ExtiInput<'static>, ExtiInput<'static>, DefaultPhase>;
 #[embassy_executor::task]
 pub async fn encoder_monitor(pin_a: ExtiInput<'static>, pin_b: ExtiInput<'static>, uart_tx: &'static UartTxMutex, keymap: &'static KeymapMutex) {
     let mut enc: Encoder = Rotary::new(pin_a, pin_b);
-    let (cw, ccw) = {
-        let keymap = keymap.lock().await;
-        // Default to Vol up/down
-        let cw = keymap.keymap.cw.encode_update(false).unwrap_or(0x6F);
-        let ccw = keymap.keymap.ccw.encode_update(false).unwrap_or(0x70);
+    let (cw, ccw) = keymap.lock(|map| {
+        let cw = map.keymap.cw.encode_update(false).unwrap_or(0x6F);
+        let ccw = map.keymap.ccw.encode_update(false).unwrap_or(0x70);
         (cw, ccw)
-    };
+    });
 
     let mut pos: i8 = 0;
     let mut interrupts = 0;
