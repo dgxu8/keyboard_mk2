@@ -25,7 +25,8 @@ pub static KEYS: StaticCell<KeyMatrix> = StaticCell::new();
 pub type KeyStateMutex = Mutex<ThreadModeRawMutex, KeyScan<'static>>;
 pub static KEY_STATE: StaticCell<KeyScan<'static>> = StaticCell::new();
 
-static STATE_CHANGE: Signal<ThreadModeRawMutex, State> = Signal::new();
+// Do full report in the next scan
+pub static REPORT_NEXT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum KeyEvent {
@@ -68,13 +69,16 @@ static LOCKOUT: Duration = Duration::from_secs(3);
 enum State {
     Normal,
     Hold((u8, Instant)),
-    LockoutTimed((Option<bool>, Option<Instant>)),
-    LockoutHold(Option<bool>),
+    TapDown((u8, Instant)),
+    TapUp((u8, Instant)),
+    LockoutTimed(Option<Instant>),
+    LockoutHold,
 }
 
 struct KeyState {
     pub state: State,
     pub changed: bool,
+    pub pulse: Option<KeyType>,
 }
 
 impl KeyState {
@@ -82,6 +86,7 @@ impl KeyState {
         Self {
             state: State::Normal,
             changed: false,
+            pulse: None,
         }
     }
     #[inline(always)]
@@ -92,7 +97,6 @@ impl KeyState {
     pub fn set(&mut self, state: State) {
         self.state = state;
         self.changed = true;
-        STATE_CHANGE.signal(self.state);
     }
     #[inline(always)]
     pub fn set_normal(&mut self) {
@@ -105,33 +109,59 @@ impl KeyState {
         ));
     }
     #[inline(always)]
-    pub fn set_lockout_timed(&mut self, en_num: Option<bool>, timeout: bool) {
+    pub fn set_tap_down(&mut self, key_code: u8) {
+        self.set(State::TapDown(
+            (key_code, Instant::now() + Duration::from_millis(200))
+        ));
+    }
+    #[inline(always)]
+    pub fn set_lockout_timed(&mut self, timeout: bool) {
         if timeout {
-            self.set(State::LockoutTimed((en_num, Some(Instant::now() + LOCKOUT))));
+            self.set(State::LockoutTimed(Some(Instant::now() + LOCKOUT)));
         } else {
-            self.set(State::LockoutTimed((en_num, None)));
+            self.set(State::LockoutTimed(None));
         }
     }
     #[inline(always)]
-    pub fn set_lockout_hold(&mut self, en_num: Option<bool>) {
-        self.set(State::LockoutHold(en_num));
+    pub fn set_lockout_hold(&mut self) {
+        self.set(State::LockoutHold); }
+    #[inline(always)]
+    pub fn set_pulse(&mut self, key: KeyType) {
+        self.pulse = Some(key);
+    }
+    #[inline(always)]
+    pub fn take_pulse(&mut self) -> Option<KeyType> {
+        core::mem::take(&mut self.pulse)
     }
 }
 
-fn check_timeouts(scan: &mut KeyScan, state: &mut KeyState) -> bool {
+fn check_timeouts(scan: &mut KeyScan, state: &mut KeyState, toggle: bool) -> bool {
     let time = Instant::now();
     match state.get() {
         State::Hold((_, timeout)) if timeout < time => {
             scan.lockout = true;
             scan.alt_en = true;
-            state.set_lockout_timed(Some(false), true);
+            state.set_lockout_timed(true);
             return true;
         },
-        State::LockoutTimed((num_en, Some(timeout))) if timeout < time => {
+        State::TapDown((code, timeout)) if timeout < time => {
+            scan.lockout = true;
+            scan.update_force(KeyType::Keycode(code), true);
+            state.set_lockout_timed(false);
+        },
+        State::TapUp((code, timeout)) if timeout < time => {
+            scan.lockout = true;
+            let key_code = KeyType::Keycode(code);
+            scan.update_force(key_code, true);
+            state.set_pulse(key_code);
+            state.set_lockout_timed(true);
+        },
+        State::LockoutTimed(Some(timeout)) if timeout < time => {
             state.set_normal();
             scan.lockout = false;
-            if let Some(num_en) = num_en {
-                scan.alt_en = num_en;
+            if scan.alt_en != toggle {
+                scan.alt_en = toggle;
+                REPORT_FULL.signal(());
                 return true;
             }
         },
@@ -153,17 +183,17 @@ pub async fn run(
     let mut state = KeyState::new();
     loop {
         task_profiler::set!();
-        if state.changed {
-            state.changed = false;
+        if REPORT_NEXT.try_take().is_some() {
+            REPORT_FULL.signal(());
         }
 
         // Maybe move into check_alt
-        let mut alt_changed = check_timeouts(key_scan, &mut state);
-        alt_changed = key_scan.check_alt(&mut state) || alt_changed;
+        let mut alt_changed = key_scan.check_alt_and_timeouts(&mut state);
 
         keymap.lock(|keymap| keys.scan(key_scan, keymap));
-        let pulse = key_scan.check_signal(&mut state);
+        key_scan.check_signal(&mut state, &mut alt_changed);
 
+        // TODO: evaluate not needing to send full state if alt mode changed
         let packet = if REPORT_FULL.try_take().is_some() || alt_changed {
             Some(key_scan.encode_state())
         } else if key_scan.populate_update() {
@@ -173,12 +203,13 @@ pub async fn run(
         };
 
         key_scan.clear();
-        if let Some(code) = pulse {
+        if let Some(code) = state.take_pulse() {
             key_scan.update_force(code, false);
         }
 
-        if let Some(state) = STATE_CHANGE.try_take() {
-            defmt::info!("Switched to {}", state);
+        if state.changed {
+            defmt::info!("Switched to {}", state.get());
+            state.changed = false;
         }
 
         // Send data
@@ -187,12 +218,16 @@ pub async fn run(
             uart_tx.write_slice(packet.as_slice()).await;
             // task_profiler::print!();
         }
-
         if alt_changed {
             oled.send(Draw::Numlock(key_scan.alt_en)).await;
         }
         ticker.next().await;
     }
+}
+
+enum Layer {
+    Arrow,
+    Numpad,
 }
 
 pub struct KeyScan<'a> {
@@ -201,7 +236,7 @@ pub struct KeyScan<'a> {
     inter: Vec<(KeyType, bool), 8>,
     toggle: Input<'a>,
     toggle_state: bool,
-    pub alt_en: bool,
+    pub alt_en: bool,  // TODO: Replace w/ an enum
     lockout: bool,
     event: Option<KeyEvent>,
 }
@@ -229,45 +264,69 @@ impl<'a> KeyScan<'a> {
         self.inter.clear();
     }
 
-    fn check_alt(&mut self, state: &mut KeyState) -> bool {
-        let hold_state = ALT_HOLD.load(Ordering::Relaxed);
+    fn check_alt_and_timeouts(&mut self, state: &mut KeyState) -> bool {
+        let hold_pressed = ALT_HOLD.load(Ordering::Relaxed);
 
         let toggle_state = self.toggle.is_high();
         let toggle_change = toggle_state != self.toggle_state;
+        // TODO: Maybe wrap this into a if toggle_change
         self.toggle_state = toggle_state;
 
         match state.get() {
-            State::Hold(_) if hold_state => {
+            State::Hold(_) if hold_pressed => {
                 self.alt_en = true;
                 self.lockout = true;
-                state.set_lockout_hold(Some(false));
-                STATE_CHANGE.signal(state.get());
+                state.set_lockout_hold();
+                REPORT_NEXT.signal(());
                 true
             },
             // User toggled into numpad while in hold state so assume meant to send numpad key.
             State::Hold(_) if toggle_change && toggle_state => {
                 self.alt_en = true;
                 self.lockout = true;
-                state.set_lockout_timed(None, false);
+                state.set_lockout_timed(false);
+                REPORT_NEXT.signal(());
                 // Don't need to add key since we will trigger full keystate send
-                STATE_CHANGE.signal(state.get());
                 true
             },
-            State::LockoutHold(en_num) if !hold_state => {
-                if let Some(en_num) = en_num {
-                    self.alt_en = en_num;
+            State::TapDown(_) if toggle_change && !toggle_state => {
+                self.alt_en = false;
+                self.lockout = true;
+                state.set_lockout_timed(false);
+                REPORT_NEXT.signal(());
+                true
+            },
+            // User taped a numkey then switched to arrow mapping
+            State::TapUp((code, _)) if toggle_change && !toggle_state => {
+                self.alt_en = false;
+                self.lockout = true;
+
+                let key_code = KeyType::Keycode(code);
+                self.update_force(key_code, true);
+                state.set_pulse(key_code);
+
+                state.set_lockout_timed(true);
+                true
+            },
+            State::LockoutHold if !hold_pressed => {
+                let changed = toggle_state != self.alt_en; self.alt_en = toggle_state;
+                self.lockout = true;
+                state.set_lockout_timed(true);
+                if changed {
+                    REPORT_FULL.signal(());
+                    REPORT_NEXT.signal(());
+                    true
+                } else {
+                    false
                 }
-                self.lockout = false;
-                state.set_normal();
-                STATE_CHANGE.signal(state.get());
-                true
             },
-            State::Normal | State::LockoutTimed(_) if hold_state && !toggle_state => {
+            State::Normal | State::LockoutTimed(_) if hold_pressed && !toggle_state => {
                 let changed = !self.alt_en;
                 self.alt_en = true;
                 self.lockout = true;
-                state.set_lockout_hold(Some(false));
+                state.set_lockout_hold();
                 if changed {
+                    REPORT_FULL.signal(());
                     true
                 } else {
                     false
@@ -277,72 +336,102 @@ impl<'a> KeyScan<'a> {
                 let changed = toggle_state != self.alt_en;
                 self.alt_en = toggle_state;
                 self.lockout = true;
-                state.set_lockout_timed(None, true);
+                state.set_lockout_timed(true);
                 if changed {
+                    REPORT_FULL.signal(());
                     true
                 } else {
                     false
                 }
             },
-            _ => false,
+            _ => check_timeouts(self, state, toggle_state),
         }
     }
 
     #[inline(always)]
-    fn check_signal(&mut self, state: &mut KeyState) -> Option<KeyType> {
+    fn check_signal(&mut self, state: &mut KeyState, alt_changed: &mut bool){
         let Some(event) = core::mem::take(&mut self.event) else {
-            return None;
+            return;
         };
         match (state.get(), event) {
             (State::Normal, KeyEvent::HoldPress(code)) => {
                 state.set_hold(code);
             },
             (State::Normal, KeyEvent::DancePress(code)) => {
-                todo!("Handle this with {code}");
+                state.set_tap_down(code);
             },
             (State::Hold((hold_key, _)), KeyEvent::HoldRelease(code)) => {
                 if hold_key != code {
                     defmt::warn!("Press key is different from the release key: ({}, {})", hold_key, code);
                 }
                 let key_code = KeyType::Keycode(hold_key);
+                self.lockout = true;
                 self.update_force(key_code, true);
-                state.set_lockout_timed(None, true);
-                self.lockout = true;
-                return Some(key_code);
+                state.set_lockout_timed(true);
+                state.set_pulse(key_code);
             },
-            (State::Hold((hold_key, _)), KeyEvent::HoldPress(code)) => {
-                if hold_key == code {
-                    defmt::warn!("Got two subsequent hold presses, wtf ({}, {})", hold_key, code);
-                }
-                self.update_force(KeyType::Keycode(hold_key), true);
+            (State::Hold((prev_code, _)), KeyEvent::HoldPress(code))
+            | (State::TapDown((prev_code, _)), KeyEvent::DancePress(code)) =>
+            {
+                self.update_force(KeyType::Keycode(prev_code), true);
                 self.update_force(KeyType::Keycode(code), true);
-                state.set_lockout_timed(None, true);
+                state.set_lockout_timed(true);
                 self.lockout = true;
             },
-            (State::LockoutTimed((en_num, _)),
+            (State::TapDown(info), KeyEvent::DanceRelease(_)) => {
+                state.set(State::TapUp(info));
+            },
+            (State::TapUp((tap_key, _)), KeyEvent::DancePress(code)) if tap_key == code => {
+                self.lockout = true;
+                self.alt_en = false;
+                *alt_changed = true;
+                state.set_lockout_timed(true);
+                REPORT_NEXT.signal(());
+            },
+            (State::TapUp((tap_key, _)), KeyEvent::DancePress(code)) => {
+                self.lockout = true;
+                state.set_lockout_timed(true);
+
+                // Need to initiate this key down
+                let pulsed_key = KeyType::Keycode(tap_key);
+                self.update_force(pulsed_key, true);
+                state.set_pulse(pulsed_key);
+
+                // Also key down this
+                self.update_force(KeyType::Keycode(code), true);
+            },
+            (State::TapUp((tap_key, _)), KeyEvent::MultiEventReset|KeyEvent::MultiEventPause) => {
+                self.lockout = true;
+                state.set_lockout_timed(true);
+
+                let pulsed_key = KeyType::Keycode(tap_key);
+                self.update_force(pulsed_key, true);
+                state.set_pulse(pulsed_key);
+                REPORT_FULL.signal(());
+            },
+            (State::LockoutTimed(_),
              KeyEvent::HoldPress(_)
              | KeyEvent::DancePress(_)
              | KeyEvent::MultiEventPause) =>
             {
-                state.set_lockout_timed(en_num, false);
+                state.set_lockout_timed(false);
                 self.lockout = true;
             },
-            (State::LockoutTimed((en_num, _)),
+            (State::LockoutTimed(_),
              KeyEvent::HoldRelease(_)
              | KeyEvent::DanceRelease(_)
              | KeyEvent::MultiEventReset) =>
             {
-                state.set_lockout_timed(en_num, true);
+                state.set_lockout_timed(true);
                 self.lockout = true;
             },
             (_, KeyEvent::MultiEventReset|KeyEvent::MultiEventPause) => {
                 REPORT_FULL.signal(());
-                state.set_lockout_timed(None, true);
+                state.set_lockout_timed(true);
                 self.lockout = true;
             },
             _ => (),
         }
-        None
     }
 
     #[inline(always)]
@@ -362,18 +451,20 @@ impl<'a> KeyScan<'a> {
 
     #[inline(always)]
     fn update(&mut self, mut keycode: KeyType, pressed: bool, changed: bool) {
-        if changed {
-            match keycode.into_event(pressed) {
-                None => (),
-                Some((event, code)) if self.lockout => {
-                    self.set_event(event);
-                    keycode = KeyType::Keycode(code);
-                },
-                Some((event, _)) => {
-                    self.set_event(event);
-                    return;  // Exit early
-                },
-            }
+        match keycode.into_event(pressed) {
+            None => (),
+            Some((KeyEvent::HoldPress(_)|KeyEvent::DancePress(_), code)) if self.lockout && !changed => {
+                keycode = KeyType::Keycode(code);
+            },
+            Some((event, code)) if self.lockout => {
+                self.set_event(event);
+                keycode = KeyType::Keycode(code);
+            },
+            Some((event, _)) if changed => {
+                self.set_event(event);
+                return;  // Exit early
+            },
+            _ => (),
         }
 
         if pressed {

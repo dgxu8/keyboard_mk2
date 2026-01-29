@@ -23,11 +23,11 @@ np_keymap:
   - [HOLD_ALT(LEFT),   HOLD_ALT(DOWN), HOLD_ALT(RIGHT)]
 
 np_keymap_alt:
-  - [NUMLOCK, KPSLASH, KPASTERISK, KPMINUS]
-  - [KP7, KP8, KP9,   KPPLUS]
-  - [KP4, KP5, KP6]
-  - [KP1, KP2, KP3,   ENTER]
-  - [KP0, KP0, KPDOT]
+  - [TAP_ALT(NUMLOCK), TAP_ALT(KPSLASH), TAP_ALT(KPASTERISK), KPMINUS]
+  - [TAP_ALT(KP7),     TAP_ALT(KP8),     TAP_ALT(KP9),        KPPLUS]
+  - [TAP_ALT(KP4),     TAP_ALT(KP5),     TAP_ALT(KP6)]
+  - [TAP_ALT(KP1),     TAP_ALT(KP2),     TAP_ALT(KP3),        ENTER]
+  - [TAP_ALT(KP0),     TAP_ALT(KP0),     TAP_ALT(KPDOT)]
 
 # Counter Clockwise | Clockwise
 rotary_binds:

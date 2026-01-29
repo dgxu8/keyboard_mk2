@@ -11,7 +11,7 @@ if [ -c $PROGRAM_TTY ] && [ -c $CMD_TTY ]; then
         exit 1
     fi
     echo -en "\x02" > $CMD_TTY
-    sleep 5
+    sleep 3
 else
     echo "ACM1 does not exist switching to using USB0"
     CMD_TTY=""

@@ -10,8 +10,8 @@ pub enum KeyType {
     Keycode(u8),
     Mediacode(u8),
     EnableNum,
-    TapDanceDisableNum(u8),  // Tap dance into arrow keys (holds the keybind in the normal state)
     HoldEnableNum(u8),  // Hold into numbers (holds the keybind in the normal state)
+    TapDanceDisableNum(u8),  // Tap dance into arrow keys (holds the keybind in the normal state)
     #[default]
     NoCode,
 }
@@ -26,6 +26,7 @@ impl TryFrom<&[u8]> for KeyType {
             (2, 0) => Ok(KeyType::EnableNum),
             (2, 1) => Ok(KeyType::NoCode),
             (3, code) => Ok(KeyType::HoldEnableNum(code)),
+            (4, code) => Ok(KeyType::TapDanceDisableNum(code)),
             _ => Err(()),
         }
     }

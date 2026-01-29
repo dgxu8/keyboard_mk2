@@ -20,8 +20,10 @@ KEYCODE_ID = 0
 CONSUMER_ID = 1
 CUSTOM_ID = 2
 HOLD_ID = 3
+TAP_ID = 4
 
 HOLD_STR = "HOLD_ALT"
+TAP_STR = "TAP_ALT"
 
 keycodes = {
   "A": 0x04,
@@ -183,8 +185,11 @@ def map_code(handle):
     else:
         raise KeyError(f"Invalid key: {handle}")
 
-    if match is not None and match.group(1) == HOLD_STR:
-        category = HOLD_ID
+    if match is not None:
+        if match.group(1) == HOLD_STR:
+            category = HOLD_ID
+        elif match.group(1) == TAP_STR:
+            category = TAP_ID
 
     return struct.pack("<BB", category, hexcode)
 
