@@ -2,11 +2,16 @@
 Firmware and design files for my second keyboard but now all in rust.
 
 # Structure
+```
 /
 |
 +- rightboard/  # Firmware for right keyboard
 |
 +- leftboard/   # Firmware for left keyboard
+|
++- util/        # Utility library for misc stuff shared across both boards
+|
++- task-profiler/ # proc macro for roughly profiling sync/async time
 |
 +- scripts/
     |
@@ -17,6 +22,7 @@ Firmware and design files for my second keyboard but now all in rust.
     +- convert_to_raw.py: Convert bitmap into raw binary file.
     |
     +- load_keymap.py: Load keymap to keyboard.
+```
 
 # Example Script commands
 Convert .bmp into raw file:
