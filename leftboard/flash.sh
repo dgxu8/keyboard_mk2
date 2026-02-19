@@ -18,9 +18,14 @@ export -f poll_for_id
 fixup_options() {
     timeout 1 bash -c "poll_for_id $KEYBOARD_ID"
     if [ $? -ne 0 ]; then
-        echo "Updating option bytes..."
+        echo "Polling for STM DFU..."
         poll_for_id $STM32_DFU
-        STM32_Programmer_CLI -c port=USB1 -ob nBOOT0=1  -ob nSWBOOT0=1 > /dev/null
+        # Need to split since USB passthrough is slow
+        echo "Setting nBOOT0 option byte..."
+        STM32_Programmer_CLI -c port=USB1 -ob nBOOT0=1 > /dev/null
+        poll_for_id $STM32_DFU
+        echo "Setting nSWBOOT0 option bytes..."
+        STM32_Programmer_CLI -c port=USB1 -ob nSWBOOT0=1 > /dev/null
     fi
 }
 

@@ -24,6 +24,28 @@ Firmware and design files for my second keyboard but now all in rust.
     +- load_keymap.py: Load keymap to keyboard.
 ```
 
+# TODOS
+## Both
+
+## Rightboard TODOs
+- [ ] Switch to using layers instead of the bool `alt_en`
+- [ ] Maybe switch to storing col/row instead of keycode
+- [ ] Don't do the fancy multi-press handling. If the same button is released signal a release.
+- [ ] Speed up drawing to the OLED
+- [ ] Indicate HOLD/TAP timeout on OLED
+
+## Leftboard TODOs
+- [ ] Support a BIOS mode and draw it on OLED
+- [ ] Turn on media control usb device
+- [ ] Finalize PID & VID
+- [ ] ?Move all serial devices to since serial dev?
+
+# Installs for flashing
+- cargo objcopy: `cargo install cargo-binutils`
+- defmt-print: `cargo install defmt-print`
+- STM32_Programmer_CLI: Download from ST's site
+- lsof
+
 # Example Script commands
 Convert .bmp into raw file:
 `uv run scripts/convert_to_raw.py src/capslock.bmp`
