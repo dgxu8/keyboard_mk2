@@ -29,7 +29,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use static_cell::StaticCell;
 use util::cobs_uart::{cobs_config, CmdId, CobsTx, UartTxMutex};
-use util::keymap::FullState;
+use util::keycom::FullState;
 
 use crate::keyscan::{Keymap, Keyscan, KEYMAP, LB_KEYSTATE};
 use crate::serial::{RB_KEYSTATE, RB_NOTIFY};

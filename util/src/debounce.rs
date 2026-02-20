@@ -1,4 +1,4 @@
-use crate::keymap::{FullState, KeyType};
+use crate::keycom::{FullState, KeyType};
 
 pub const RB_ROW_LEN: usize = 8;
 pub const RB_COL_LEN: usize = 8;

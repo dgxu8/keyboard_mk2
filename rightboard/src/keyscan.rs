@@ -9,7 +9,7 @@ use heapless::Vec;
 use portable_atomic::AtomicBool;
 use static_cell::StaticCell;
 use util::debounce::{self, RB_COL_LEN, RB_ROW_LEN};
-use util::keymap::{FullState, KeyType};
+use util::keycom::{FullState, KeyType};
 
 use core::ops::Deref;
 use core::sync::atomic::Ordering;

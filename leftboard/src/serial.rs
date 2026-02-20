@@ -3,7 +3,7 @@ use embassy_stm32::{mode::Async, usart::UartRx};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::Instant;
 use static_cell::StaticCell;
-use util::keymap::KeyType;
+use util::keycom::KeyType;
 use embedded_io_async::Write;
 use util::cobs_uart::{bl_config, cobs_config, Clearable, CmdId, CobsBuffer, CobsRx, RspnId, SerialRx, UartTxMutex};
 

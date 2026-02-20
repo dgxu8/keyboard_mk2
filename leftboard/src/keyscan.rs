@@ -4,7 +4,7 @@ use embassy_stm32::{flash::{Bank1Region, Blocking}, gpio::{Input, Output}, pac};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Instant, Ticker};
 use static_cell::StaticCell;
-use util::{debounce, keymap::{FullState, KeyType}};
+use util::{debounce, keycom::{FullState, KeyType}};
 use util::cobs_uart::{CmdId, CobsTx, UartTxMutex};
 
 use crate::{KeyStateMutex, KEY_CHANGE};
