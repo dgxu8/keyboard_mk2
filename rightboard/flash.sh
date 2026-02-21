@@ -22,15 +22,23 @@ else
     fi
 fi
 
-set -e
-
 cargo objcopy --bin rightboard --release -- -O binary target/rightboard.bin
+if [ $? -ne 0 ]; then
+    exit 1
+fi
+
 STM32_Programmer_CLI -c "port=${PROGRAM_TTY}" -w target/rightboard.bin 0x08000000
+RET=$?
 
 if [ -n $CMD_TTY ]; then
     echo -en "\x04" > $CMD_TTY
 else
     exit 0
+fi
+
+if [ $RET -ne 0 ]; then
+    echo "Flash failed, exiting"
+    exit 1
 fi
 
 sleep 0.5
