@@ -28,8 +28,8 @@ Firmware and design files for my second keyboard but now all in rust.
 ## Both
 
 ## Rightboard TODOs
-- [ ] Switch to using layers instead of the bool `alt_en`
-- [ ] Maybe switch to storing col/row instead of keycode
+- [x] Switch to using layers instead of the bool `alt_en`
+- [x] Switch to storing full keybind instead of one keycode
 - [ ] Don't do the fancy multi-press handling. If the same button is released signal a release.
 - [ ] Speed up drawing to the OLED
 - [ ] Indicate HOLD/TAP timeout on OLED

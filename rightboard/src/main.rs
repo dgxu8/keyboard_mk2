@@ -8,6 +8,8 @@ extern crate panic_halt;
 pub mod keyscan;
 pub mod rotary;
 pub mod display;
+pub mod keymap;
+pub mod state_machine;
 
 use core::sync::atomic::Ordering;
 
@@ -37,7 +39,9 @@ use util::cobs_uart::{self, cobs_config, CmdId, CobsBuffer, CobsRx, CobsTx, Rspn
 use util::logger::BUFFER;
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
-use crate::keyscan::{ALT_HOLD, KEY_STATE, KEYMAP, KEYS, KeyMatrix, KeyScan, Keymap, KeymapMutex, REPORT_FULL};
+use crate::keyscan::{KEYS, KeyMatrix};
+use crate::state_machine::{ALT_HOLD, Layer, REPORT_FULL, STATE_MACHINE, StateMachine};
+use crate::keymap::{KEYMAP, Keymap, KeymapMutex};
 use crate::display::{display_draw, Draw, DISPLAY_DRAW, OLED_STR};
 
 bind_interrupts!(struct UsartIrqs {
@@ -140,16 +144,17 @@ async fn main(spawner: Spawner) -> ! {
     display.clear(BinaryColor::Off).unwrap();
     display.flush().await.unwrap();
 
-    let key_state = KeyScan::new(Input::new(p.PB0, Pull::Down));
-    let key_state = KEY_STATE.init(key_state);
+    let state_machine = StateMachine::new(Input::new(p.PB0, Pull::Down));
+    let state_machine = STATE_MACHINE.init(state_machine);
     let oled = DISPLAY_DRAW.sender();
-    if key_state.alt_en {
+
+    if state_machine.layer == Layer::Numpad {
         oled.send(Draw::Numlock(true)).await;
     }
 
     spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a, uart_tx, keymap)).unwrap();
     spawner.spawn(display_draw(display)).unwrap();
-    spawner.spawn(keyscan::run(keys, uart_tx, keymap, key_state)).unwrap();
+    spawner.spawn(keyscan::run(keys, uart_tx, keymap, state_machine)).unwrap();
     spawner.spawn(run_logger(uart_tx)).unwrap();
 
 

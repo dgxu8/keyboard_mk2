@@ -31,6 +31,18 @@ impl TryFrom<&[u8]> for KeyType {
         }
     }
 }
+impl KeyType {
+    #[inline(always)]
+    pub fn dance_to(self) -> KeyType {
+        match self {
+            Self::HoldEnableNum(code)|Self::TapDanceDisableNum(code) => {
+                KeyType::Keycode(code)
+            },
+            _ => unreachable!(),  // Just trust me bro. Probably should move special keys into a
+                                  // different table/map.
+        }
+    }
+}
 
 impl KeyType {
     // Encode update to send and over serial

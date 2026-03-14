@@ -6,7 +6,7 @@ use rotary_encoder_hal::{DefaultPhase, Direction, Rotary};
 
 use util::cobs_uart::{CobsTx, RspnId, UartTxMutex};
 
-use crate::keyscan::KeymapMutex;
+use crate::keymap::KeymapMutex;
 
 pub static ENCODER_STATE: Signal<CriticalSectionRawMutex, EncoderState> = Signal::new();
 
