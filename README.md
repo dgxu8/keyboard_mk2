@@ -26,11 +26,14 @@ Firmware and design files for my second keyboard but now all in rust.
 
 # TODOS
 ## Both
+- [ ] Don't do the fancy multi-press handling. If the same button is released signal a release.
+- [ ] Evaluate all inlines
+- [ ] Evaluate all pub functions
 
 ## Rightboard TODOs
 - [x] Switch to using layers instead of the bool `alt_en`
 - [x] Switch to storing full keybind instead of one keycode
-- [ ] Don't do the fancy multi-press handling. If the same button is released signal a release.
+- [ ] Look at making when we send full states smarter (from numpad switches)
 - [ ] Speed up drawing to the OLED
 - [ ] Indicate HOLD/TAP timeout on OLED
 
@@ -39,6 +42,17 @@ Firmware and design files for my second keyboard but now all in rust.
 - [ ] Turn on media control usb device
 - [ ] Finalize PID & VID
 - [ ] ?Move all serial devices to since serial dev?
+
+## Clean-up
+- [ ] Remove commented out code
+- [ ] Use rust formatter
+- [ ] Switch to NoopRawMutex
+- [ ] Update readme structure
+- [ ] Flesh out readme more
+- [ ] Move all project files into git repo
+
+## Stretch
+- [ ] Provide a webpage or API over usb ncm to do something
 
 # Installs for flashing
 - cargo objcopy: `cargo install cargo-binutils`
