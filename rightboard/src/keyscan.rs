@@ -35,7 +35,7 @@ pub async fn run(
         // TODO: evaluate not needing to send full state if layer changed
         let packet = if REPORT_FULL.try_take().is_some() || state.layer_changed {
             Some(scan.encode_state())
-        } else if scan.populate_update() {
+        } else if scan.len() > 0 {
             Some(encode_cobs(RspnId::KeyChange as u8, scan.as_slice()).unwrap())
         } else {
             None

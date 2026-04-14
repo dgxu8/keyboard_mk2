@@ -26,7 +26,7 @@ Firmware and design files for my second keyboard but now all in rust.
 
 # TODOS
 ## Both
-- [ ] Don't do the fancy multi-press handling. If the same button is released signal a release.
+- [x] Don't do the fancy multi-press handling. If the same button is released signal a release.
 - [ ] Evaluate all inlines
 - [ ] Evaluate all pub functions
 

@@ -1,39 +1,71 @@
 use core::ops::{Deref, DerefMut};
 
 use embassy_stm32::{flash::{Bank1Region, Blocking}, gpio::{Input, Output}, pac};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
+use embassy_sync::{blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex}, mutex::Mutex, signal::Signal};
 use embassy_time::{Duration, Instant, Ticker};
 use static_cell::StaticCell;
-use util::{debounce, keycom::{FullState, KeyType}};
+use util::{debounce, keycom::KeyType};
 use util::cobs_uart::{CmdId, CobsTx, UartTxMutex};
 
-use crate::{KeyStateMutex, KEY_CHANGE};
+use crate::{KEY_CHANGE, KeyStateMutex};
 
 static ROW_LEN: usize = 5;
 static COL_LEN: usize = 8;
 
-pub static LB_KEYSTATE: StaticCell<KeyStateMutex> = StaticCell::new();
+pub static FULL_SCAN: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
 #[embassy_executor::task]
-pub async fn run(mut keys: Keyscan<'static>, keymap: &'static KeymapMutex, key_state: &'static KeyStateMutex, uart_tx: &'static UartTxMutex) {
+pub async fn run(
+    mut keys: Keyscan<'static>,
+    keymap: &'static KeymapMutex,
+    main_state: &'static KeyStateMutex,
+    uart_tx: &'static UartTxMutex
+) {
     let mut ticker = Ticker::every(Duration::from_millis(1));
     loop {
         let start = Instant::now();
-        let (change, enable_num) =  {
-            let mut state = key_state.lock().await;
-            state.clear();
-            let mut keymap = keymap.lock().await;
-            keys.scan(&mut state, &mut keymap)
-        };
+        let mut enable_num = None;
+
+        let keymap = keymap.lock().await;
+        if FULL_SCAN.try_take().is_some() {
+            // Only occurs from right board full scan so trigger a key change event.
+            KEY_CHANGE.signal(());
+
+            unsafe {  main_state.lock_mut(|state| {  // Not a nesting locks
+                keys.scan(|col, row, pressed, _| {
+                    if !pressed { return; }
+                    let key = keymap.map[col as usize][row as usize];
+                    state.set(key);
+                });
+            })};
+        } else {
+            unsafe { main_state.lock_mut(|state| {  // Not a nesting locks
+                keys.scan(|col, row, pressed, changed| {
+                    if !changed { return; }
+                    let key = keymap.map[col as usize][row as usize];
+                    match key {
+                        KeyType::NoCode => (),
+                        KeyType::EnableNum => enable_num = Some(pressed),
+                        _ => {
+                            KEY_CHANGE.signal(());
+                            state.set_key_value(key, pressed);
+                        },
+                    }
+                });
+            })};
+        }
+        drop(keymap);
         let dur = Instant::now() - start;
+
+        if KEY_CHANGE.signaled() {
+            defmt::info!("Keyscan time: {}us", dur.as_micros());
+        }
+
         if let Some(alt_en) = enable_num {
             let mut uart_tx = uart_tx.lock().await;
             uart_tx.send(CmdId::AltEnable, &[alt_en as u8]).await.unwrap();
         }
-        if change {
-            KEY_CHANGE.signal(true);
-            defmt::info!("Keyscan time: {}", dur.as_micros());
-        }
+
         ticker.next().await;
     }
 }
@@ -68,35 +100,18 @@ impl<'a> Keyscan<'a> {
         (pac::GPIOB.idr().read().0 >> 3) & 0xFF
     }
 
-    #[inline(always)]
-    fn scan(&mut self, key_state: &mut FullState, keymap: &mut Keymap) -> (bool, Option<bool>) {
-        let mut change = false;
-        let mut enable_num = None;
+    #[inline]
+    fn scan<F>(&mut self, mut notify: F)
+    where
+        F: FnMut(usize, usize, bool, bool) -> (),
+    {
         // We enter here w/ decoder set to col zero
         for col in 0..8 {
-            let notify = |row, pressed, changed| {
-                let key = keymap.map[col as usize][row as usize];
-                if changed {
-                    match key {
-                        // Maybe just remove this? who cares if we trigger a read?
-                        KeyType::NoCode => (),
-                        // Bug here if multiple keys are EnableNum. If both are pressed this could
-                        // flip if one is released (depends on scan order).
-                        KeyType::EnableNum => enable_num = Some(pressed),
-                        _ => change = true,
-                    }
-                }
-                if pressed {
-                    key_state.set(key);
-                }
-            };
             let reg = self.read_raw();
             // Set next decoder for next column so it has time to propagate
             self.set_raw((col+1) as u32);
-            debounce::debounce(&mut self.state[col], reg, notify);
+            debounce::debounce(&mut self.state[col], reg, |row, pressed, changed| notify(col, row, pressed, changed));
         }
-
-        (change, enable_num)
     }
 }
 

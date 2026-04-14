@@ -1,8 +1,20 @@
-use core::{cmp::Ordering, usize};
+use core::cmp::Ordering;
 use heapless::Vec;
 
 #[cfg(feature = "coproc")]
 use crate::cobs_uart::{CobsTx, RspnId, SerialTx};
+
+macro_rules! key_id {
+    ($val:expr) => {
+        (1 << ($val % 8))
+    };
+}
+
+macro_rules! mod_id {
+    ($val:expr) => {
+        (1 << ($val - 0xE0))
+    };
+}
 
 #[derive(PartialEq, Eq, Clone, Copy, defmt::Format)]
 #[derive(Default)]
@@ -132,24 +144,14 @@ impl FullState {
         self.audio = 0;
     }
 
-    #[inline(always)]
-    pub fn merge(&self, other: &Self) -> [u8; 13] {
-        let combined: Vec<u8, 13> = self.key[..13]
-            .iter().zip(&other.key[..13])
-            .map(|(val1, val2)| *val1 | *val2)
-            .collect();
-        // This shouldn't do anything under the hood since the size is the same
-        unsafe { combined[..].try_into().unwrap_unchecked() }
-    }
-
-    #[inline(always)]
+    #[inline(always)]  // TODO: Maybe remove? maybe still usefull
     pub fn is_set(&self, key: KeyType) -> bool {
         match key {
             KeyType::Keycode(val) if val < 0x66 => {
-                (self.key[(val as usize) / 8] & (1 << (val % 8))) != 0
+                (self.key[(val as usize) / 8] & key_id!(val)) != 0
             },
             KeyType::Keycode(val) if val >= 0xE0 && val <= 0xE7 => {
-                (self.modifier & 1 << (val - 0xE0)) != 0
+                (self.modifier & mod_id!(val)) != 0
             },
             KeyType::Mediacode(val) if val == 0xE2 => {
                 (self.audio & (1 << 0)) != 0
@@ -164,14 +166,13 @@ impl FullState {
         }
     }
 
-    #[inline(always)]
     pub fn set(&mut self, key: KeyType) {
         match key {
             KeyType::Keycode(val) if val < 0x66 => {
-                self.key[val as usize / 8] |= 1 << (val % 8);
+                self.key[val as usize / 8] |= key_id!(val);
             },
             KeyType::Keycode(val) if val >= 0xE0 && val <= 0xE7 => {
-                self.modifier |= 1 << (val - 0xE0);
+                self.modifier |= 1 << mod_id!(val);
             },
             KeyType::Mediacode(val) if val == 0xE2 => {
                 self.audio |= 1 << 0;
@@ -186,36 +187,13 @@ impl FullState {
         }
     }
 
-    #[inline(always)]
-    pub fn set_test(&mut self, key: KeyType) {
-        match key {
-            KeyType::Keycode(val) if val < 0x66 => {
-                self.key[val as usize / 8] |= 1 << (val % 8);
-            },
-            KeyType::Keycode(val) if val >= 0xE0 && val <= 0xE7 => {
-                self.modifier |= 1 << (val - 0xE0);
-            },
-            KeyType::Mediacode(val) if val == 0xE2 => {
-                self.audio |= 1 << 0;
-            },
-            KeyType::Mediacode(val) if val == 0xE9 => {
-                self.audio |= 1 << 1;
-            },
-            KeyType::Mediacode(val) if val == 0xEA => {
-                self.audio |= 1 << 2;
-            },
-            _ => (),
-        }
-    }
-
-    #[inline(always)]
     pub fn reset(&mut self, key: KeyType) {
         match key {
             KeyType::Keycode(val) if val < 0x66 => {
-                self.key[val as usize / 8] &= !(1 << (val % 8));
+                self.key[val as usize / 8] &= !key_id!(val);
             },
             KeyType::Keycode(val) if val >= 0xE0 && val <= 0xE7 => {
-                self.modifier &= !(1 << (val - 0xE0));
+                self.modifier &= !mod_id!(val);
             },
             KeyType::Mediacode(val) if val == 0xE2 => {
                 self.audio &= !(1 << 0);
@@ -227,6 +205,15 @@ impl FullState {
                 self.audio &= !(1 << 2);
             },
             _ => (),
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_key_value(&mut self, key: KeyType, pressed: bool) {
+        if pressed {
+            self.set(key);
+        } else {
+            self.reset(key);
         }
     }
 
@@ -257,20 +244,19 @@ impl FullState {
 
     #[inline(always)]
     pub fn deserialize(&mut self, buf: &[u8]) -> bool {
-        let mut changed = false;
-
         let modifier_new = buf[13];
-        changed = changed || self.modifier != modifier_new;
-        self.modifier = modifier_new;
-
         let audio_new = (buf[12] >> 5) & 0x7;
-        changed = changed || self.audio != audio_new;
-        self.audio = audio_new;
+        if self.modifier == modifier_new
+            && self.audio == audio_new
+            && (self.key[..12].iter().cmp(&buf[..12]) == Ordering::Equal)
+            && (self.key[12] == (buf[12] & 0x1F)) {
+            return false;
+        }
 
-        changed = changed || (self.key[..12].iter().cmp(&buf[..12]) != Ordering::Equal);
-        changed = changed || (self.key[12] != (buf[12] & 0x1F));
+        self.modifier = modifier_new;
+        self.audio = audio_new;
         self.key.copy_from_slice(&buf[..13]);
         self.key[12] &= 0x1F;
-        changed
+        return true;
     }
 }

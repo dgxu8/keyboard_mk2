@@ -391,7 +391,6 @@ impl<'a> StateMachine<'a> {
 pub struct KeyScan {
     pub state: FullState,
     update: Vec<u8, 8>,
-    inter: Vec<(KeyType, bool), 8>,
 }
 
 impl KeyScan {
@@ -399,14 +398,12 @@ impl KeyScan {
         KeyScan {
             state: FullState::new(),
             update: Vec::new(),
-            inter: Vec::new(),
         }
     }
 
     pub fn clear(&mut self) {
         self.state.clear();
         self.update.clear();
-        self.inter.clear();
     }
 
     pub fn update(
@@ -461,40 +458,26 @@ impl KeyScan {
             return;
         }
 
+        // If we are going to send a full report don't update
         if !REPORT_FULL.signaled() {
-            // If we are going to send a full report don't update inter
-            if self.inter.push((keycode, pressed)).is_err() {
-                REPORT_FULL.signal(());
+            if let Ok(key) = keycode.encode_update(pressed) {
+                if self.update.push(key).is_err() {
+                    REPORT_FULL.signal(());
+                }
             }
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn update_force(&mut self, keycode: KeyType, pressed: bool) {
-        if self.inter.push((keycode, pressed)).is_err() {
-            REPORT_FULL.signal(());
+        if let Ok(key) = keycode.encode_update(pressed) {
+            if self.update.push(key).is_err() {
+                REPORT_FULL.signal(());
+            }
         }
         if pressed {
             self.state.set(keycode);
         }
-    }
-
-    /// Take the intermediary and populated the update vector
-    ///
-    /// Returns true if an update is available
-    #[inline(always)]
-    pub fn populate_update(&mut self) -> bool {
-        self.update = self.inter.iter().filter_map(|(key, pressed)| {
-            let is_pressed = self.state.is_set(*key);
-            if *pressed == is_pressed
-                && let Ok(k) = key.encode_update(*pressed)
-            {
-                Some(k)
-            } else {
-                None
-            }
-        }).collect();
-        !self.update.is_empty()
     }
 
     #[inline(always)]

@@ -42,7 +42,7 @@ pub fn rb_unpack_state(buf: &[u8], state: &mut [[u8; RB_ROW_LEN]; RB_COL_LEN]) {
 #[inline(always)]
 pub fn debounce<F>(state: &mut [u8], mut reg: u32, mut notify: F)
 where
-    F: FnMut(u8, bool, bool) -> (),
+    F: FnMut(usize, bool, bool) -> (),
 {
     for i in 0..state.len() {
         let val = reg & 0x1 != 0;

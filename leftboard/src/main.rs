@@ -23,7 +23,8 @@ use embassy_stm32::usart::Uart;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, Config};
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
@@ -31,8 +32,8 @@ use static_cell::StaticCell;
 use util::cobs_uart::{cobs_config, CmdId, CobsTx, UartTxMutex};
 use util::keycom::FullState;
 
-use crate::keyscan::{Keymap, Keyscan, KEYMAP, LB_KEYSTATE};
-use crate::serial::{RB_KEYSTATE, RB_NOTIFY};
+use crate::keyscan::{Keymap, Keyscan, KEYMAP};
+use crate::serial::RB_NOTIFY;
 use crate::usb::{init_usb, HidRqstHndlr, NKROKeyboardReport, CAPS_LOCK};
 use crate::usb_com::CoprocCtrl;
 
@@ -51,8 +52,9 @@ unsafe extern "C" {
     static __keymap_end: u32;
 }
 
-pub type KeyStateMutex = Mutex<CriticalSectionRawMutex, FullState>;
-static KEY_CHANGE: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+pub type KeyStateMutex = blocking_mutex::Mutex<ThreadModeRawMutex, FullState>;
+pub static KEYSTATE: StaticCell<KeyStateMutex> = StaticCell::new();
+static KEY_CHANGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -128,8 +130,7 @@ async fn main(spawner: Spawner) {
     let keymap = Keymap::new(flash, keymap_start, keymap_end);
     let keymap = KEYMAP.init(Mutex::new(keymap));
 
-    let rb_state = RB_KEYSTATE.init(Mutex::new(FullState::new()));
-    let lb_state = LB_KEYSTATE.init(Mutex::new(FullState::new()));
+    let main_state = KEYSTATE.init(blocking_mutex::Mutex::new(FullState::new()));
 
     defmt::info!("Boot time: {}us", Instant::now().as_micros());
     Timer::after_millis(5).await;
@@ -137,23 +138,21 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(logger::run(defmt_out)).unwrap();
     spawner.spawn(usb_com::run(acm0_in, uart_tx, rb_ctrl, keymap)).unwrap();
-    spawner.spawn(serial::run(uart_tx, uart_rx, acm1, rb_state)).unwrap();
-    spawner.spawn(keyscan::run(keys, keymap, lb_state, uart_tx)).unwrap();
+    spawner.spawn(serial::run(uart_tx, uart_rx, acm1, main_state)).unwrap();
+    spawner.spawn(keyscan::run(keys, keymap, main_state, uart_tx)).unwrap();
 
     let blink_fut = async {
         loop {
             KEY_CHANGE.wait().await;
             led1.toggle();
-            let report = {
-                let lb_state = lb_state.lock().await;
-                let rb_state = rb_state.lock().await;
+            let report = main_state.lock(|main| {
                 NKROKeyboardReport {
-                    keycodes: lb_state.merge(&rb_state),
+                    keycodes: main.key[..13].try_into().unwrap(),
                     leds: 0,
-                    modifier: lb_state.modifier | rb_state.modifier,
+                    modifier: main.modifier,
                     reserved: 0,
                 }
-            };
+            });
             match writer.write_serialize(&report).await {
                 Ok(()) => {},
                 Err(e) => defmt::warn!("Error sending key {:?}", e as u8),
@@ -164,10 +163,7 @@ async fn main(spawner: Spawner) {
         loop {
             RB_NOTIFY.wait().await;
             while select(RB_NOTIFY.wait(), Timer::after_millis(500)).await.is_first() {};
-            let any_pressed = async {
-                let rb_state = rb_state.lock().await;
-                rb_state.any_set()
-            }.await;
+            let any_pressed = main_state.lock(|state| state.any_set());
             if any_pressed {
                 {
                     let mut uart_tx = uart_tx.lock().await;

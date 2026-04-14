@@ -1,13 +1,12 @@
-use embassy_futures::{join::join, select::{select, Either}};
+use embassy_futures::{join::join, select::{Either, select}, yield_now};
 use embassy_stm32::{mode::Async, usart::UartRx};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::Instant;
-use static_cell::StaticCell;
 use util::keycom::KeyType;
 use embedded_io_async::Write;
 use util::cobs_uart::{bl_config, cobs_config, Clearable, CmdId, CobsBuffer, CobsRx, RspnId, SerialRx, UartTxMutex};
 
-use crate::{KeyStateMutex, KEY_CHANGE};
+use crate::{KEY_CHANGE, KeyStateMutex, keyscan::FULL_SCAN};
 use crate::{logger::bridge_rb, usb::{CdcDev, UsbRx, UsbTx}};
 
 #[derive(PartialEq, Eq, defmt::Format)]
@@ -19,11 +18,15 @@ pub enum UartState {
 
 pub static UART_STATE: Signal<CriticalSectionRawMutex, UartState> = Signal::new();
 pub static FLASH_READY: Signal<CriticalSectionRawMutex, bool> = Signal::new();
-pub static RB_NOTIFY: Signal<CriticalSectionRawMutex, bool> = Signal::new();
-pub static RB_KEYSTATE: StaticCell<KeyStateMutex> = StaticCell::new();
+pub static RB_NOTIFY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[embassy_executor::task]
-pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>, mut class: CdcDev, key_state: &'static KeyStateMutex) -> ! {
+pub async fn run(
+    uart_tx: &'static UartTxMutex,
+    uart_rx: UartRx<'static, Async>,
+    mut class: CdcDev,
+    key_state: &'static KeyStateMutex
+) -> ! {
     let mut rx_buf: [u8; 64] = [0; 64];
 
     let mut uart_rx = uart_rx.into_ring_buffered(&mut rx_buf);
@@ -75,24 +78,28 @@ pub async fn run(uart_tx: &'static UartTxMutex, uart_rx: UartRx<'static, Async>,
 async fn handle_rb_serial(id: RspnId, buf: &CobsBuffer, key_state: &KeyStateMutex) {
     match id {
         RspnId::KeyChange => {
-            let mut key_state = key_state.lock().await;
-            for byte in buf.iter() {
-                let (key, pressed) = KeyType::decode_update(*byte);
-                if pressed {
-                    key_state.set(key);
-                } else {
-                    key_state.reset(key);
+            // Not a nesting locks
+            unsafe { key_state.lock_mut(|key_state| {
+                for byte in buf.iter() {
+                    let (key, pressed) = KeyType::decode_update(*byte);
+                    key_state.set_key_value(key, pressed);
                 }
-            }
-            KEY_CHANGE.signal(true);
-            RB_NOTIFY.signal(true);
+            })};
+            KEY_CHANGE.signal(());
+            RB_NOTIFY.signal(());
         },
         RspnId::FullState => {
-            let mut key_state = key_state.lock().await;
-            let start = Instant::now();
-            if key_state.deserialize(&buf) {
-                KEY_CHANGE.signal(true);
+            // Wait for the key change to be sent out before overwriting everything.
+            while KEY_CHANGE.signaled() {
+                yield_now().await;
             }
+
+            let start = Instant::now();
+            unsafe { key_state.lock_mut(|state| {  // Not a nesting locks
+                if state.deserialize(&buf) {
+                    FULL_SCAN.signal(());
+                }
+            })};
             let dur = Instant::now() - start;
             defmt::info!("Deserialization: {}us", dur.as_micros())
         },
