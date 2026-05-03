@@ -35,26 +35,59 @@ pub fn rb_unpack_state(buf: &[u8], state: &mut [[u8; RB_ROW_LEN]; RB_COL_LEN]) {
     }
 }
 
-/// Parse and debounce state
-///
-/// If "coproc" feature is set, notify will be called on changes in state. If it isn't set then
-/// notify is called on all keys that are pressed.
 #[inline(always)]
-pub fn debounce<F>(state: &mut [u8], mut reg: u32, mut notify: F)
+pub fn debounce_update<F>(state: &mut [u8], reg: u32, notify: F)
 where
-    F: FnMut(usize, bool, bool) -> (),
+    F: FnMut(usize, bool) -> (),
+{
+    debounce(state, reg, notify, |_, _| {});
+}
+
+#[inline(always)]
+pub fn debounce_full<F>(state: &mut [u8], reg: u32, notify: F)
+where
+    F: FnMut(usize, bool) -> (),
+{
+    debounce(state, reg, |_, _| {}, notify);
+}
+
+#[inline(always)]
+pub fn debounce<F, G>(state: &mut [u8], mut reg: u32, mut notify_change: F, mut notify_full: G)
+where
+    F: FnMut(usize, bool) -> (),
+    G: FnMut(usize, bool) -> (),
 {
     for i in 0..state.len() {
         let val = reg & 0x1 != 0;
-        integrate(&mut state[i], val, |pressed, changed| notify(i as _, pressed, changed));
+        integrate(
+            &mut state[i], val,
+            |pressed| notify_change(i as _, pressed),
+            |changed| notify_full(i as _, changed),
+        );
         reg >>= 1;
     }
 }
 
 #[inline(always)]
-pub fn integrate<F>(cnt: &mut u8, pressed: bool, mut notify: F)
+pub fn integrate_update<F>(cnt: &mut u8, pressed: bool, notify: F)
 where
-    F: FnMut(bool, bool) -> (),
+    F: FnMut(bool) -> (),
+{
+    integrate(cnt, pressed, notify, |_| {});
+}
+
+#[inline(always)]
+pub fn integrate_full<F>(cnt: &mut u8, pressed: bool, notify: F)
+where
+    F: FnMut(bool) -> (),
+{
+    integrate(cnt, pressed, |_| {}, notify);
+}
+
+pub fn integrate<F, G>(cnt: &mut u8, pressed: bool, mut notify_change: F, mut notify_full: G)
+where
+    F: FnMut(bool) -> (),
+    G: FnMut(bool) -> (),
 {
     let mut changed = false;
     if pressed {
@@ -63,6 +96,7 @@ where
             if *cnt == FLIP {
                 *cnt = MAX + OVERSHOOT;
                 changed = true;
+                notify_change(true);
             }
         }
     } else {
@@ -71,11 +105,12 @@ where
             if *cnt == FLIP {
                 *cnt = MIN;
                 changed = true;
+                notify_change(false);
             }
         }
     }
-    if *cnt > FLIP || changed {
-        notify(*cnt > FLIP, changed);
+    if *cnt > FLIP {
+        notify_full(changed);
     }
 }
 

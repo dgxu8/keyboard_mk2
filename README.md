@@ -33,7 +33,8 @@ Firmware and design files for my second keyboard but now all in rust.
 ## Rightboard TODOs
 - [x] Switch to using layers instead of the bool `alt_en`
 - [x] Switch to storing full keybind instead of one keycode
-- [ ] Look at making when we send full states smarter (from numpad switches)
+- [x] Look at making when we send full states smarter (from numpad switches)
+- [ ] Maybe make full scan detection even smarter
 - [ ] Speed up drawing to the OLED
 - [ ] Indicate HOLD/TAP timeout on OLED
 

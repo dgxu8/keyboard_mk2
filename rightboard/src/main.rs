@@ -40,7 +40,7 @@ use util::logger::BUFFER;
 
 use crate::rotary::{encoder_monitor, ENCODER_STATE};
 use crate::keyscan::{KEYS, KeyMatrix};
-use crate::state_machine::{ALT_HOLD, Layer, REPORT_FULL, STATE_MACHINE, StateMachine};
+use crate::state_machine::{ALT_HOLD, Layer, REPORT_FULL, StateMachine};
 use crate::keymap::{KEYMAP, Keymap, KeymapMutex};
 use crate::display::{display_draw, Draw, DISPLAY_DRAW, OLED_STR};
 
@@ -145,7 +145,7 @@ async fn main(spawner: Spawner) -> ! {
     display.flush().await.unwrap();
 
     let state_machine = StateMachine::new(Input::new(p.PB0, Pull::Down));
-    let state_machine = STATE_MACHINE.init(state_machine);
+    // let state_machine = STATE_MACHINE.init(state_machine);
     let oled = DISPLAY_DRAW.sender();
 
     if state_machine.layer == Layer::Numpad {

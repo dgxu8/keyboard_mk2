@@ -24,7 +24,7 @@ use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, Config};
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_sync::blocking_mutex;
-use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
@@ -52,7 +52,7 @@ unsafe extern "C" {
     static __keymap_end: u32;
 }
 
-pub type KeyStateMutex = blocking_mutex::Mutex<ThreadModeRawMutex, FullState>;
+pub type KeyStateMutex = blocking_mutex::Mutex<NoopRawMutex, FullState>;
 pub static KEYSTATE: StaticCell<KeyStateMutex> = StaticCell::new();
 static KEY_CHANGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 

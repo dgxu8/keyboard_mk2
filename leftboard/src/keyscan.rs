@@ -1,10 +1,10 @@
 use core::ops::{Deref, DerefMut};
 
 use embassy_stm32::{flash::{Bank1Region, Blocking}, gpio::{Input, Output}, pac};
-use embassy_sync::{blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex}, mutex::Mutex, signal::Signal};
+use embassy_sync::{blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex}, mutex::Mutex, signal::Signal};
 use embassy_time::{Duration, Instant, Ticker};
 use static_cell::StaticCell;
-use util::{debounce, keycom::KeyType};
+use util::{debounce, keycom::{FullState, KeyType}};
 use util::cobs_uart::{CmdId, CobsTx, UartTxMutex};
 
 use crate::{KEY_CHANGE, KeyStateMutex};
@@ -13,6 +13,7 @@ static ROW_LEN: usize = 5;
 static COL_LEN: usize = 8;
 
 pub static FULL_SCAN: Signal<ThreadModeRawMutex, ()> = Signal::new();
+static ENABLE_NUM: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
 #[embassy_executor::task]
 pub async fn run(
@@ -24,7 +25,6 @@ pub async fn run(
     let mut ticker = Ticker::every(Duration::from_millis(1));
     loop {
         let start = Instant::now();
-        let mut enable_num = None;
 
         let keymap = keymap.lock().await;
         if FULL_SCAN.try_take().is_some() {
@@ -32,26 +32,11 @@ pub async fn run(
             KEY_CHANGE.signal(());
 
             unsafe {  main_state.lock_mut(|state| {  // Not a nesting locks
-                keys.scan(|col, row, pressed, _| {
-                    if !pressed { return; }
-                    let key = keymap.map[col as usize][row as usize];
-                    state.set(key);
-                });
+                keys.scan(Fullscan {state, keymap: &keymap});
             })};
         } else {
             unsafe { main_state.lock_mut(|state| {  // Not a nesting locks
-                keys.scan(|col, row, pressed, changed| {
-                    if !changed { return; }
-                    let key = keymap.map[col as usize][row as usize];
-                    match key {
-                        KeyType::NoCode => (),
-                        KeyType::EnableNum => enable_num = Some(pressed),
-                        _ => {
-                            KEY_CHANGE.signal(());
-                            state.set_key_value(key, pressed);
-                        },
-                    }
-                });
+                keys.scan(Update {state, keymap: &keymap});
             })};
         }
         drop(keymap);
@@ -61,12 +46,50 @@ pub async fn run(
             defmt::info!("Keyscan time: {}us", dur.as_micros());
         }
 
-        if let Some(alt_en) = enable_num {
+        if let Some(alt_en) = ENABLE_NUM.try_take() {
             let mut uart_tx = uart_tx.lock().await;
             uart_tx.send(CmdId::AltEnable, &[alt_en as u8]).await.unwrap();
         }
 
         ticker.next().await;
+    }
+}
+
+trait Debounce {
+    fn debounce(&mut self, row_vals: &mut [u8], reg: u32, col: usize);
+}
+
+struct Update<'a, 'b> {
+    state: &'a mut FullState,
+    keymap: &'b Keymap<'b>,
+}
+impl Debounce for Update<'_, '_> {
+    fn debounce(&mut self, row_vals: &mut [u8], reg: u32, col: usize) {
+        let notify = |row, pressed| {
+            let key = self.keymap.map[col][row];
+            match key {
+                KeyType::Keycode(_)|KeyType::Mediacode(_) => {
+                    KEY_CHANGE.signal(());
+                    self.state.set_key_value(key, pressed);
+                },
+                KeyType::EnableNum => ENABLE_NUM.signal(pressed),
+                _ => (),
+            }
+        };
+        debounce::debounce_update(row_vals, reg, notify);
+    }
+}
+
+struct Fullscan<'a, 'b> {
+    state: &'a mut FullState,
+    keymap: &'b Keymap<'b>,
+}
+impl Debounce for Fullscan<'_, '_> {
+    fn debounce(&mut self, row_vals: &mut [u8], reg: u32, col: usize) {
+        let notify = |row, _pressed| {
+            self.state.set(self.keymap.map[col][row]);
+        };
+        debounce::debounce_full(row_vals, reg, notify);
     }
 }
 
@@ -101,21 +124,19 @@ impl<'a> Keyscan<'a> {
     }
 
     #[inline]
-    fn scan<F>(&mut self, mut notify: F)
-    where
-        F: FnMut(usize, usize, bool, bool) -> (),
+    fn scan(&mut self, mut notify: impl Debounce)
     {
         // We enter here w/ decoder set to col zero
         for col in 0..8 {
             let reg = self.read_raw();
             // Set next decoder for next column so it has time to propagate
             self.set_raw((col+1) as u32);
-            debounce::debounce(&mut self.state[col], reg, |row, pressed, changed| notify(col, row, pressed, changed));
+            notify.debounce(&mut self.state[col], reg, col);
         }
     }
 }
 
-pub type KeymapMutex = Mutex<CriticalSectionRawMutex, Keymap<'static>>;
+pub type KeymapMutex = Mutex<NoopRawMutex, Keymap<'static>>;
 pub static KEYMAP: StaticCell<KeymapMutex> = StaticCell::new();
 
 #[repr(C, align(8))]

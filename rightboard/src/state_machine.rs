@@ -12,7 +12,7 @@ use core::sync::atomic::Ordering;
 
 use util::cobs_uart::{RspnId, SerialBuffer, encode_cobs};
 
-use crate::keymap::{KeyBinds, Keymap};
+use crate::keymap::KeyBinds;
 
 const HOLD_TIMEOUT: Duration = Duration::from_millis(500);
 const TAP_TIMEOUT: Duration = Duration::from_millis(200);
@@ -125,7 +125,7 @@ impl Deref for KeyState {
 }
 
 pub struct StateMachine<'a> {
-    state: KeyState,
+    pub state: KeyState,
     pub layer: Layer,
     toggle: Input<'a>,
     toggle_state: Layer,
@@ -134,7 +134,7 @@ pub struct StateMachine<'a> {
     pulse: Option<KeyType>,
     pub layer_changed: bool,
     event: Option<KeyEvent>,
-    lockout: bool,
+    pub lockout: bool,
 }
 
 impl<'a> StateMachine<'a> {
@@ -142,8 +142,7 @@ impl<'a> StateMachine<'a> {
         let layer = Layer::from(toggle.is_high());
         Self {
             state: KeyState::new(),
-            layer,
-            toggle,
+            layer, toggle,
             toggle_state: layer,
 
             pulse: None,
@@ -186,7 +185,7 @@ impl<'a> StateMachine<'a> {
     }
 
     #[inline(always)]
-    fn set_hold_event(&mut self, binds: KeyBinds, pressed: bool) {
+    pub fn set_hold_event(&mut self, binds: KeyBinds, pressed: bool) {
         if pressed {
             self.set_event(KeyEvent::HoldPress(binds));
         } else {
@@ -195,7 +194,7 @@ impl<'a> StateMachine<'a> {
     }
 
     #[inline(always)]
-    fn set_tap_event(&mut self, binds: KeyBinds, pressed: bool) {
+    pub fn set_tap_event(&mut self, binds: KeyBinds, pressed: bool) {
         if pressed {
             self.set_event(KeyEvent::DancePress(binds));
         } else {
@@ -214,30 +213,32 @@ impl<'a> StateMachine<'a> {
         self.toggle_state = toggle_layer;
 
         match *self.state {
-            State::Hold(_) if hold_pressed => {
+            State::Hold(key) if hold_pressed => {
                 self.layer = Layer::Numpad;
                 self.layer_changed = true;
+                scan.update_force(key.get(Layer::Numpad), true);
                 self.state.set_lockout_hold();
             },
             // User toggled into numpad while in hold state so assume meant to send numpad key.
-            State::Hold(_) if toggle_change && toggle_layer == Layer::Numpad => {
+            State::Hold(key) if toggle_change && toggle_layer == Layer::Numpad => {
                 self.layer = Layer::Numpad;
-                // Don't need to add key since we will trigger full keystate send
                 self.layer_changed = true;
+                scan.update_force(key.get(Layer::Numpad), true);
                 self.state.set_lockout_timed(false);
             },
-            State::TapDown(_) if toggle_change && toggle_layer == Layer::Arrow => {
+            State::TapDown(key) if toggle_change && toggle_layer == Layer::Arrow => {
                 self.layer = Layer::Arrow;
                 self.layer_changed = true;
+                scan.update_force(key.get(Layer::Arrow), true);
                 self.state.set_lockout_timed(false);
             },
             // User taped a numkey then switched to arrow mapping
-            State::TapUp(binds) if toggle_change && toggle_layer == Layer::Arrow => {
+            State::TapUp(key) if toggle_change && toggle_layer == Layer::Arrow => {
                 self.layer = Layer::Arrow;
                 self.layer_changed = true;
                 self.state.set_lockout_timed(true);
 
-                let key_code = binds.get(Layer::Numpad);
+                let key_code = key.get(Layer::Numpad);
                 scan.update_force(key_code, true);
                 self.pulse = Some(key_code);
             },
@@ -277,6 +278,7 @@ impl<'a> StateMachine<'a> {
             State::Hold(key) if key.timeout < time => {
                 self.layer = Layer::Numpad;
                 self.layer_changed = true;
+                scan.update_force(key.get(Layer::Numpad), true);
                 self.state.set_lockout_timed(true);
             },
             State::TapDown(key) if key.timeout < time => {
@@ -406,64 +408,11 @@ impl KeyScan {
         self.update.clear();
     }
 
-    pub fn update(
-        &mut self,
-        state: &mut StateMachine,
-        map: &Keymap,
-        col: usize, row: usize,
-        pressed: bool, changed: bool,
-    ) {
-        let mut keycode = map.map(col, row, state.layer);
-        match keycode {
-            KeyType::Keycode(_)|KeyType::Mediacode(_) => (),
-            KeyType::HoldEnableNum(code)|KeyType::TapDanceDisableNum(code) if state.lockout && !changed => {
-                if pressed {
-                    self.state.set(KeyType::Keycode(code));
-                }
-                return;
-            },
-            KeyType::HoldEnableNum(code) if state.lockout => {
-                let info = map.get_info(col, row);
-                state.set_hold_event(info, pressed);
-                keycode = KeyType::Keycode(code);
-            },
-            KeyType::HoldEnableNum(_) if changed => {
-                let info = map.get_info(col, row);
-                state.set_hold_event(info, pressed);
-                return;
-            },
-            KeyType::TapDanceDisableNum(code) if state.lockout => {
-                let info = map.get_info(col, row);
-                state.set_tap_event(info, pressed);
-                keycode = KeyType::Keycode(code);
-            },
-            KeyType::TapDanceDisableNum(_) if changed => {
-                let info = map.get_info(col, row);
-                state.set_tap_event(info, pressed);
-                return;
-            },
-            KeyType::NoCode => return,
-            KeyType::EnableNum => {
-                ALT_HOLD.fetch_or(pressed, Ordering::Relaxed);
-                return;
-            },
-            _ => return,
-        }
-
-        if pressed {
-            self.state.set(keycode);
-        }
-
-        if !changed {
-            return;
-        }
-
-        // If we are going to send a full report don't update
-        if !REPORT_FULL.signaled() {
-            if let Ok(key) = keycode.encode_update(pressed) {
-                if self.update.push(key).is_err() {
-                    REPORT_FULL.signal(());
-                }
+    #[inline(always)]
+    pub fn update_vec(&mut self, keycode: KeyType, pressed: bool) {
+        if let Ok(key) = keycode.encode_update(pressed) {
+            if self.update.push(key).is_err() {
+                REPORT_FULL.signal(());
             }
         }
     }

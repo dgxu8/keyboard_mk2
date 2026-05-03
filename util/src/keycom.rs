@@ -166,6 +166,7 @@ impl FullState {
         }
     }
 
+    #[inline(always)]
     pub fn set(&mut self, key: KeyType) {
         match key {
             KeyType::Keycode(val) if val < 0x66 => {
@@ -187,6 +188,7 @@ impl FullState {
         }
     }
 
+    #[inline(always)]
     pub fn reset(&mut self, key: KeyType) {
         match key {
             KeyType::Keycode(val) if val < 0x66 => {

@@ -1,5 +1,5 @@
 use embassy_stm32::flash::{Blocking, Flash};
-use embassy_sync::blocking_mutex::{Mutex, raw::ThreadModeRawMutex};
+use embassy_sync::blocking_mutex::{Mutex, raw::{NoopRawMutex}};
 use embassy_time::Instant;
 use static_cell::StaticCell;
 use util::{debounce::{RB_COL_LEN, RB_ROW_LEN}, keycom::KeyType};
@@ -10,7 +10,7 @@ const NUM_ROW_BOT: usize = 0;
 const NUM_ROW_LEN: usize = 7;
 const NUM_COL_LEN: usize = 3;
 
-pub type KeymapMutex = Mutex<ThreadModeRawMutex, Keymap<'static>>;
+pub type KeymapMutex = Mutex<NoopRawMutex, Keymap<'static>>;
 pub static KEYMAP: StaticCell<KeymapMutex> = StaticCell::new();
 
 macro_rules! push_keymap {
