@@ -173,7 +173,7 @@ impl FullState {
                 self.key[val as usize / 8] |= key_id!(val);
             },
             KeyType::Keycode(val) if val >= 0xE0 && val <= 0xE7 => {
-                self.modifier |= 1 << mod_id!(val);
+                self.modifier |= mod_id!(val);
             },
             KeyType::Mediacode(val) if val == 0xE2 => {
                 self.audio |= 1 << 0;
