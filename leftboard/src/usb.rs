@@ -42,6 +42,7 @@ pub static CAPS_LOCK: Signal<CriticalSectionRawMutex, u8> = Signal::new();
 
 static CFG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static CTRL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static DEV_HANDLER: StaticCell<MyDeviceHandler> = StaticCell::new();
 
 static CDC_STATE: StaticCell<cdc_acm::State> = StaticCell::new();
@@ -64,18 +65,17 @@ pub fn init_usb(driver: Driver<'static, USB>) -> (UsbDevice<'static, Driver<'sta
 
     let cfg_desc = CFG_DESC.init([0; 256]);
     let ctrl_buf = CTRL_BUF.init([0; 64]);
+    let bos_desc = BOS_DESC.init([0; 256]);
     let device_handler = DEV_HANDLER.init(MyDeviceHandler::new());
 
     let state = CDC_STATE.init(cdc_acm::State::new());
     let defmt_state = DEFMT_STATE.init(cdc_acm::State::new());
     let hid_state = HID_STATE.init(hid::State::new());
-    // Not allocating anything for BOS since there isn't any reason to support the LPM USB 2.0
-    // extension.
     let mut builder = Builder::new(
         driver,
         usb_cfg,
         cfg_desc,
-        &mut [],
+        bos_desc,
         &mut [],
         ctrl_buf
     );

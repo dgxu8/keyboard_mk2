@@ -42,6 +42,8 @@ Firmware and design files for my second keyboard but now all in rust.
 - [ ] Support a BIOS mode and draw it on OLED
 - [ ] Turn on media control usb device
 - [ ] Finalize PID & VID
+- [ ] Finalize BOS descriptor buffer size
+- [ ] Check if we need the MSOS descriptor
 - [ ] ?Move all serial devices to since serial dev?
 
 ## Clean-up
