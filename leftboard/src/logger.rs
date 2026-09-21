@@ -22,7 +22,7 @@ pub async fn run(mut class: Sender<'static, Driver<'static, USB>>) {
     OUTPUT_DEFMT.wait().await;
     // Delay a bit so we don't send the data
     Timer::after_millis(100).await;
-    defmt::info!("Buffer size: {}", BUFFER.len());
+    defmt::debug!("Buffer size: {}", BUFFER.len());
     loop {
         let len = BUFFER.read(&mut buf).await;
         class.write_packets(&buf[..len]).await.unwrap();

@@ -1,7 +1,7 @@
 use core::{cmp, sync::atomic::{AtomicBool, Ordering}};
 
 use embassy_stm32::{peripherals::USB, usb::Driver};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+use embassy_sync::{blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex}, signal::Signal};
 use embassy_usb::{class::{cdc_acm::{self, CdcAcmClass, Receiver, Sender}, hid::{self, HidReaderWriter, ReportId, RequestHandler}}, control::OutResponse, driver::{self, EndpointError}, Builder, Handler, UsbDevice};
 use static_cell::StaticCell;
 use usbd_hid::{descriptor::*};
@@ -39,6 +39,7 @@ pub struct NKROKeyboardReport {
 }
 
 pub static CAPS_LOCK: Signal<CriticalSectionRawMutex, u8> = Signal::new();
+pub static USB_READY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
 static CFG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static CTRL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
@@ -53,6 +54,18 @@ pub type UsbTx<'a> = Sender<'a, Driver<'a, USB>>;
 pub type UsbRx<'a> = Receiver<'a, Driver<'a, USB>>;
 pub type CdcDev = CdcAcmClass<'static, Driver<'static, USB>>;
 type HidRW = HidReaderWriter<'static, Driver<'static, USB>, 1, 15>;
+
+#[embassy_executor::task]
+pub async fn run_usb(mut usb: UsbDevice<'static, Driver<'static, USB>>) -> ! {
+    usb.run().await;
+}
+
+#[inline(always)]
+pub async fn wait_for_usb() {
+    while USB_READY.wait().await == false {
+        defmt::info!("Not configured");
+    }
+}
 
 pub fn init_usb(driver: Driver<'static, USB>) -> (UsbDevice<'static, Driver<'static, USB>>, HidRW, CdcDev, CdcDev) {
     // This has linux quirk to disable echo for devices with this pid/vid
@@ -84,7 +97,7 @@ pub fn init_usb(driver: Driver<'static, USB>) -> (UsbDevice<'static, Driver<'sta
     let hid_cfg = embassy_usb::class::hid::Config {
         report_descriptor: NKROKeyboardReport::desc(),
         request_handler: None,
-        poll_ms: 50,
+        poll_ms: 1,
         max_packet_size: 15,
     };
     let h = HidRW::new(&mut builder, hid_state, hid_cfg);
@@ -178,7 +191,12 @@ impl Handler for MyDeviceHandler {
     }
 
     fn configured(&mut self, configured: bool) {
+        USB_READY.signal(configured);
         self.configured.store(configured, Ordering::Relaxed);
         defmt::info!("configured: {}", configured);
+    }
+
+    fn suspended(&mut self, suspended: bool) {
+        defmt::info!("suspended: {}", suspended);
     }
 }

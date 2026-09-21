@@ -14,7 +14,7 @@ use cortex_m::asm;
 use defmt;
 
 use embassy_executor::Spawner;
-use embassy_futures::join;
+use embassy_futures::{join, yield_now};
 use embassy_futures::select::select;
 use embassy_stm32::flash::Flash;
 use embassy_stm32::rcc::mux::Clk48sel;
@@ -34,7 +34,7 @@ use util::keycom::FullState;
 
 use crate::keyscan::{Keymap, Keyscan, KEYMAP};
 use crate::serial::RB_NOTIFY;
-use crate::usb::{init_usb, HidRqstHndlr, NKROKeyboardReport, CAPS_LOCK};
+use crate::usb::{CAPS_LOCK, HidRqstHndlr, NKROKeyboardReport, init_usb, run_usb, wait_for_usb};
 use crate::usb_com::CoprocCtrl;
 
 bind_interrupts!(struct USBIrqs {
@@ -77,9 +77,20 @@ async fn main(spawner: Spawner) {
     config.rcc.mux.clk48sel = Clk48sel::HSI48;
     let p = embassy_stm32::init(config);
 
-    let _led0 = Output::new(p.PB0, Level::Low, Speed::Low);
+    let mut status_led = Output::new(p.PB1, Level::High, Speed::Low);
+
+    // Start USB early
+    let driver = Driver::new(p.USB, USBIrqs, p.PA12, p.PA11);
+    let (usb, hid, acm0, acm1) = init_usb(driver);
+    let to_usb = Instant::now();
+    // let usb_usages = usb.buffer_usage();
+    // defmt::info!("{}us: {:?}", to_usb.as_micros() as u16, usb_usages);
+    defmt::info!("USB Setup: {}us", to_usb.as_micros() as u16);
+    spawner.spawn(run_usb(usb)).unwrap();
+    yield_now().await;
+
     // embassy_stm32::pac::GPIOB.bsrr().write(|w| w.set_bs(0, true));
-    let mut led1 = Output::new(p.PB1, Level::Low, Speed::Low);
+    let mut caps_led = Output::new(p.PB0, Level::Low, Speed::Low);
 
     let select_pins = [
         Output::new(p.PA4, Level::Low, Speed::VeryHigh),
@@ -115,11 +126,7 @@ async fn main(spawner: Spawner) {
     static UART_TX: StaticCell<UartTxMutex> = StaticCell::new();
     let uart_tx = UART_TX.init(Mutex::new(uart_tx));
 
-    let driver = Driver::new(p.USB, USBIrqs, p.PA12, p.PA11);
-    let (mut usb, hid, acm0, acm1) = init_usb(driver);
-    let usb_usages = usb.buffer_usage();
-    defmt::info!("{:?}", usb_usages);
-    let usb_fut = usb.run();
+    yield_now().await;
 
     let (reader, mut writer) = hid.split();
     let (defmt_out, acm0_in) = acm0.split();
@@ -132,8 +139,9 @@ async fn main(spawner: Spawner) {
 
     let main_state = KEYSTATE.init(blocking_mutex::Mutex::new(FullState::new()));
 
-    defmt::info!("Boot time: {}us", Instant::now().as_micros());
-    Timer::after_millis(5).await;
+    wait_for_usb().await;
+    defmt::info!("USB Ready: {}ms", (Instant::now() - to_usb).as_millis() as u16);
+
     rb_ctrl.n_rst.set_high();
 
     spawner.spawn(logger::run(defmt_out)).unwrap();
@@ -144,7 +152,7 @@ async fn main(spawner: Spawner) {
     let blink_fut = async {
         loop {
             KEY_CHANGE.wait().await;
-            led1.toggle();
+            status_led.toggle();
             let report = main_state.lock(|main| {
                 NKROKeyboardReport {
                     keycodes: main.key[..13].try_into().unwrap(),
@@ -180,11 +188,12 @@ async fn main(spawner: Spawner) {
     let caps_handler = async {
         loop {
             let state = CAPS_LOCK.wait().await;
+            caps_led.set_level((state == 1).into());
             let mut uart_tx = uart_tx.lock().await;
             uart_tx.send(CmdId::Capslock, &[state]).await.unwrap();
         }
     };
-    join::join5(usb_fut, blink_fut, out_fut, poll_state_fut, caps_handler).await;
+    join::join4(blink_fut, out_fut, poll_state_fut, caps_handler).await;
 }
 
 #[inline(always)]

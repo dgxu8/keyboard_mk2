@@ -27,6 +27,10 @@ Firmware and design files for my second keyboard but now all in rust.
 # TODOS
 ## Both
 - [x] Don't do the fancy multi-press handling. If the same button is released signal a release.
+- [ ] Make the logger buffer length configurable by feature
+- [ ] Instead of panicing log info to oled
+- [ ] Look at switching to channels to zerocopy_channel
+- [ ] Look into RpcService
 - [ ] Evaluate all inlines
 - [ ] Evaluate all pub functions
 
@@ -37,6 +41,7 @@ Firmware and design files for my second keyboard but now all in rust.
 - [ ] Maybe make full scan detection even smarter
 - [x] Speed up drawing to the OLED (icons down to ~1ms total)
 - [ ] Indicate HOLD/TAP timeout on OLED
+- [ ] Lockout whenever we switch between hold and tap dance layers
 
 ## Leftboard TODOs
 - [ ] Get capslock on startup and send to rightboard
@@ -46,6 +51,7 @@ Firmware and design files for my second keyboard but now all in rust.
 - [ ] Finalize PID & VID
 - [ ] Finalize BOS descriptor buffer size
 - [ ] Check if we need the MSOS descriptor
+- [ ] Investitage why it takes so long for the HID device to come up
 - [ ] ?Move all serial devices to since serial dev?
 
 ## Clean-up
