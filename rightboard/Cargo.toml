@@ -23,9 +23,12 @@ static_cell = { version = "2" }
 portable-atomic = { version = "1", features = ["unsafe-assume-single-core"] }
 trait-variant = "0.1.2"
 rotary-encoder-hal = { version = "0.6.0", features = ["table-decoder"] }
-ssd1306 = { version = "0.10.0", features = ["async"] }
-util = { version = "0.1.0", path = "../util", features = ["coproc"] }
+ssd1306 = { git = "https://github.com/rust-embedded-community/ssd1306.git", features = ["async"] }
 defmt = "1.0.1"
+tinybmp = { git = "https://github.com/embedded-graphics/tinybmp.git" }
+display-interface = "0.5.0"
+
+util = { version = "0.1.0", path = "../util", features = ["coproc"] }
 task-profiler = { version = "0.1.0", path = "../task-profiler" }
 
 [[bin]]

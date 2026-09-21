@@ -74,7 +74,7 @@ pub async fn run(
         if let Some(packet) = packet {
             let mut uart_tx = uart_tx.lock().await;
             uart_tx.write_slice(packet.as_slice()).await;
-            task_profiler::print!();
+            // task_profiler::print!();
         }
         // state.defmt_state();
 

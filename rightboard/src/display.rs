@@ -1,30 +1,27 @@
 use core::fmt::Write;
+use core::ops::Deref;
 
+use display_interface::DisplayError;
 use embassy_stm32::i2c::{I2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_sync::pipe::Pipe;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embedded_graphics::image::ImageRaw;
+use embassy_time::Instant;
 use embedded_graphics::mono_font::ascii::{FONT_5X8, FONT_9X18};
 use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder};
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle};
 use embedded_graphics::text::{Baseline, Text};
-use embedded_graphics::{image::Image, prelude::Point};
+use embedded_graphics::prelude::Point;
 use heapless::String;
 use ssd1306::mode::BufferedGraphicsModeAsync;
 use ssd1306::prelude::I2CInterface;
-use ssd1306::size::DisplaySize128x32;
+use ssd1306::size::{DisplaySize128x32, DisplaySizeAsync};
 use ssd1306::Ssd1306Async;
+use tinybmp::RawBmp;
 
 use crate::rotary::EncoderState;
-
-macro_rules! raw_to_image {
-    ($file:expr, $width:expr, $x:expr, $y:expr) => {
-        Image::new(&ImageRaw::new(include_bytes!($file), $width), Point::new($x as i32, $y as i32))
-    };
-}
 
 pub static OLED_STR: Pipe<CriticalSectionRawMutex, 16> = Pipe::new();
 
@@ -41,32 +38,154 @@ pub enum Draw {
     FlashIco,
 }
 
-type MonoImage = Image<'static, ImageRaw<'static, BinaryColor>>;
 type DisplayAsync = Ssd1306Async<I2CInterface<I2c<'static, Async, Master>>, DisplaySize128x32, BufferedGraphicsModeAsync<DisplaySize128x32>>;
 
-const WIDTH: u32 = 128;
-const HEIGHT: u32 = 32;
+const WIDTH: usize = <DisplaySize128x32 as DisplaySizeAsync>::WIDTH as usize;  // 16
+const HEIGHT: usize = <DisplaySize128x32 as DisplaySizeAsync>::HEIGHT as usize;  // 4
 
-const ICON_WIDTH: u32 = 13;
-const ICON_HEIGHT: u32 = 19;
+// Put capslock to the far right side but centered
+const CAPS_X: u32 = 115; // 128 - 13
+const CAPS_Y: u32 = 6; // (32 - 19) / 2
 
-// Put Numlock to the far right side but centered
-const NUM_X: u32 = WIDTH - ICON_WIDTH;
-const NUM_Y: u32 = (HEIGHT - ICON_HEIGHT) / 2;
+// Align numlock next to capslock
+const NUM_X: u32 = 100; // 2 to the left of NUM X
+const NUM_Y: u32 = 6;
 
-// Align Capslock next to numlock
-const CAPS_X: u32 = NUM_X - ICON_WIDTH - 2;
-const CAPS_Y: u32 = NUM_Y;
+const fn const_unwrap<T: Copy, E: Copy>(res: Result<T, E>) -> T {
+    match res {
+        Ok(val) => val,
+        Err(_) => panic!("Failed to import bitmap"),
+    }
+}
+
+macro_rules! bmp_to_icon {
+    ($file:expr, $x:expr, $y:expr) => {{
+        const BMP: RawBmp<'static> = const_unwrap(RawBmp::from_slice(include_bytes!($file)));
+        const WIDTH: usize = BMP.header().image_size.width as usize;
+        const BUFFER: [u8; {WIDTH * 4}] = bmp_to_ssd1306::<{WIDTH * 4}>(&BMP, $y as usize);
+        Icon::new(&BUFFER, $x as u8, WIDTH as u8)
+    }};
+}
+struct Icon {
+    buf: &'static [u8],
+    x_start: u8,
+    x_end: u8,
+}
+
+impl Icon {
+    const fn new(buf: &'static [u8], x: u8, width: u8) -> Self {
+        Icon {
+            buf,
+            x_start: x,
+            x_end: x + width,
+        }
+    }
+
+    #[inline(always)]
+    async fn display(&self, display: &mut DisplayAsync, draw: bool) -> Result<(), DisplayError> {
+        if draw {
+            self.draw(display).await
+        } else {
+            self.clear(display).await
+        }
+    }
+
+    async fn draw(&self, display: &mut DisplayAsync) -> Result<(), DisplayError> {
+        let start = Instant::now();
+        display.set_draw_area((self.x_start, 0), (self.x_end, 32)).await?;
+        let mid = Instant::now();
+        display.draw(self.buf).await?;
+        let end = Instant::now();
+        defmt::info!("draw> set: {}, draw: {}",
+            (mid-start).as_micros() as u16,
+            (end-mid).as_micros() as u16,
+        );
+        Ok(())
+    }
+
+    async fn clear(&self, display: &mut DisplayAsync) -> Result<(), DisplayError> {
+        let start = Instant::now();
+        display.set_draw_area((self.x_start, 0), (self.x_end, 32)).await?;
+        let mid = Instant::now();
+        display.draw(&BLANK[..self.buf.len()]).await?;
+        let end = Instant::now();
+        defmt::info!("clear> set: {}, draw: {}",
+            (mid-start).as_micros() as u16,
+            (end-mid).as_micros() as u16,
+        );
+        Ok(())
+    }
+}
+
+impl Deref for Icon {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        self.buf
+    }
+}
+
+static BLANK: [u8; 512] = [0; 512];
+
+const fn bmp_to_ssd1306<const N: usize>(bmp: &RawBmp, y_offset: usize) -> [u8; N] {
+    // [y][x]
+    let header = bmp.header();
+    let row_padded = header.bytes_per_row().unwrap();
+    let height = header.image_size.height as usize;
+    let width = header.image_size.width as usize;
+    let width_bytes = (width + 7) / 8;
+    let data = bmp.image_data();
+
+    let mut tmp_buf = [[0; WIDTH]; HEIGHT];
+    let mut row = 0;
+    while row < height {
+        let mut col = 0;
+        while col < width_bytes {
+            let mut pixels = data[(row * row_padded) + col];
+            let mut bit = 0;
+            while pixels != 0 {
+                // The bits are big endian (left most pixel is the most significant bit)
+                tmp_buf[row+y_offset][(col*8)+bit] = (pixels >> 7) & 0x1;
+                pixels <<= 1;
+                bit += 1;
+            }
+            col += 1;
+        }
+        row += 1;
+    }
+
+    let mut buf = [0; N];
+    let mut seg = 0;
+    let mut idx = 0;
+    while seg < 4 {
+        let mut x = 0;
+        while x < width {
+            let mut i = 0;
+            let mut val = 0;
+            while i < 8 {
+                val |= (tmp_buf[(seg*8)+i][x]) << i;
+                i += 1;
+            }
+            buf[idx] = val;
+            idx += 1;
+            x += 1;
+        }
+        seg += 1;
+    }
+    buf
+}
 
 #[task_profiler::profile]
 #[embassy_executor::task]
 pub async fn display_draw(mut display: DisplayAsync) {
 
+    let init_start = Instant::now();
     let text_style = MonoTextStyleBuilder::new().font(&FONT_5X8).text_color(BinaryColor::On).build();
     let recv = DISPLAY_DRAW.receiver();
+    static NUM_ICON: Icon = bmp_to_icon!("../bitmaps/numlock.bmp", NUM_X, NUM_Y);
+    static CAPS_ICON: Icon = bmp_to_icon!("../bitmaps/capslock.bmp", CAPS_X, CAPS_Y);
+    let init_time = Instant::now() - init_start;
 
-    const NUM_ICON: MonoImage = raw_to_image!("./numlock.raw", ICON_WIDTH, NUM_X, NUM_Y);
-    const CAPS_ICON: MonoImage = raw_to_image!("./capslock.raw", ICON_WIDTH, CAPS_X, CAPS_Y);
+    defmt::info!("> init time: {}", init_time.as_micros() as u16);
 
     let mut str: String<16> = String::new();
     loop {
@@ -74,13 +193,15 @@ pub async fn display_draw(mut display: DisplayAsync) {
         task_profiler::set!();
         match fut {
             Draw::Numlock(state) => {
-                display.draw_image(&NUM_ICON, state);
+                NUM_ICON.display(&mut display, state).await.unwrap();
+                continue;
             },
             Draw::Capslock(state) => {
-                display.draw_image(&CAPS_ICON, state);
+                CAPS_ICON.display(&mut display, state).await.unwrap();
+                continue;
             },
             Draw::Volume(level) => {
-                display.draw_volume(level, Point::new(CAPS_X as i32 - (10 * 4), 8));
+                display.draw_volume(level, Point::new(NUM_X as i32 - (10 * 4), 8));
             },
             Draw::Timestamp(time) => {
                 str.clear();
@@ -110,19 +231,12 @@ pub async fn display_draw(mut display: DisplayAsync) {
             },
         }
         display.flush().await.unwrap();
-        {
-            str.clear();
-            core::write!(&mut str, "{} {}", task_profiler::get_sync!(), task_profiler::get_async!()).unwrap();
-            display.clear_box(Point::new(0, 20), Size::new(16*5, 10));
-            Text::with_baseline(&str, Point::new(0, 20), text_style, Baseline::Top).draw(&mut display).unwrap();
-            display.flush().await.unwrap();
-        }
+        task_profiler::print!();
     }
 }
 
 #[trait_variant::make(Send)]  // Needed for public async trait
 trait KBHelper {
-    fn draw_image(&mut self, image: &MonoImage, draw: bool);
     fn draw_volume(&mut self, level: u8, pos: Point);
     fn clear_box(&mut self, pos: Point, size: Size);
 }
@@ -132,13 +246,6 @@ const CLEAR_STYLE: PrimitiveStyle<BinaryColor> = PrimitiveStyleBuilder::new()
     .build();
 
 impl KBHelper for DisplayAsync {
-    fn draw_image(&mut self, image: &MonoImage, draw: bool) {
-        if draw {
-            image.draw(&mut self.color_converted()).unwrap();
-        } else {
-            image.bounding_box().into_styled(CLEAR_STYLE).draw(&mut self.color_converted()).unwrap();
-        }
-    }
     fn draw_volume(&mut self, level: u8, pos: Point) {
         const STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new().font(&FONT_9X18).text_color(BinaryColor::On).build();
         let mut str: String<4> = String::new();

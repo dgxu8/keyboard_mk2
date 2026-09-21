@@ -35,10 +35,12 @@ Firmware and design files for my second keyboard but now all in rust.
 - [x] Switch to storing full keybind instead of one keycode
 - [x] Look at making when we send full states smarter (from numpad switches)
 - [ ] Maybe make full scan detection even smarter
-- [ ] Speed up drawing to the OLED
+- [x] Speed up drawing to the OLED (icons down to ~1ms total)
 - [ ] Indicate HOLD/TAP timeout on OLED
 
 ## Leftboard TODOs
+- [ ] Get capslock on startup and send to rightboard
+- [ ] Force Numlock if not in it already
 - [ ] Support a BIOS mode and draw it on OLED
 - [ ] Turn on media control usb device
 - [ ] Finalize PID & VID
@@ -75,6 +77,16 @@ Test rightboard COBS connected ttyUSB0:
 
 TUI for testing rightboard COBS across ttyACM1 bridge:
 `uv run scripts/test_tui.py /dev/ttyACM1 -b`
+
+# Sprite Generation
+1. Create gimp greyscale project, setting height and width.
+2. Export as png (w/o adding any metadata)
+3. Convert to raw bitmap w/ ImageMagick:
+    a. Normal image w/ black background:
+    `$ magick numlock.png -flip -threshold 80% -type bilevel <sprite>.bmp`
+    b. Image w/ white background:
+    `$ magick numlock.png -flip -threshold 80% -negate -type bilevel <sprite>.bmp`
+4. Check bits: `$ xxd -c 2 -b <sprite>.raw`
 
 # Installs for cargo-call-stack
 ## Install llvm
