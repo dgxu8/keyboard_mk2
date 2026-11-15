@@ -4,32 +4,32 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-embassy-stm32 = { version = "0.4.0", features = ["stm32l432kc", "unstable-pac", "time-driver-any", "exti"]  }
-embassy-sync = { version = "0.7.2" }
-embassy-executor = { version = "0.9.0", features = ["arch-cortex-m", "executor-thread", "nightly"] }
-embassy-time = { version = "0.5.0" }
+embassy-stm32 = { version = "0.6.0", features = ["stm32l432kc", "unstable-pac", "time-driver-any", "exti"]  }
+embassy-sync = { version = "0.8.0" }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "nightly"] }
+embassy-time = { version = "0.5.1" }
 embassy-futures = {version = "0.1.2" }
-embassy-usb = { version = "0.5.1",  features = ["max-interface-count-7", "defmt"] }
+embassy-usb = { version = "0.6.0",  features = ["max-interface-count-7", "defmt"] }
 
-embedded-io = "0.6.1"
-embedded-io-async = "0.6.1"
+embedded-io = "0.7.1"
+embedded-io-async = "0.7.0"
 
-cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "0.7.5"
+cortex-m = { version = "0.7.10", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.7"
 panic-halt = "1.0.0"
-heapless = { version = "0.9.1" }
+heapless = { version = "0.9.3" }
 embedded-hal = "1.0.0"
 static_cell = { version = "2" }
-trait-variant = "0.1.2"
+trait-variant = "0.1.3"
 rotary-encoder-hal = { version = "0.6.0", features = ["table-decoder"] }
 ssd1306 = { version = "0.10.0", features = ["async"] }
-embedded-graphics = { version = "0.8.1", features = ["fixed_point"] }
+embedded-graphics = { version = "0.8.2", features = ["fixed_point"] }
 usbd-hid = "0.8.1"
-defmt = { version = "1.0.1" }
-serde = { version = "1.0.219", default-features = false }
+defmt = { version = "1.2.0" }
+serde = { version = "1.0.229", default-features = false }
 critical-section = "1.2.0"
 util = { version = "0.1.0", path = "../util" }
-strum = { version = "0.27.2", default-features = false, features = ["derive"] }
+strum = { version = "0.28.0", default-features = false, features = ["derive"] }
 
 [[bin]]
 name = "leftboard"

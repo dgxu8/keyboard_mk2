@@ -56,7 +56,7 @@ pub type CdcDev = CdcAcmClass<'static, Driver<'static, USB>>;
 type HidRW = HidReaderWriter<'static, Driver<'static, USB>, 1, 15>;
 
 #[embassy_executor::task]
-pub async fn run_usb(mut usb: UsbDevice<'static, Driver<'static, USB>>) -> ! {
+pub async fn run_usb(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
     usb.run().await;
 }
 
@@ -99,6 +99,8 @@ pub fn init_usb(driver: Driver<'static, USB>) -> (UsbDevice<'static, Driver<'sta
         request_handler: None,
         poll_ms: 1,
         max_packet_size: 15,
+        hid_subclass: HidSubclass::Boot, // TODO: Maybe not true
+        hid_boot_protocol: HidBootProtocol::Keyboard,
     };
     let h = HidRW::new(&mut builder, hid_state, hid_cfg);
 

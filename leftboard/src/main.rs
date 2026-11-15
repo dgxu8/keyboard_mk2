@@ -43,6 +43,8 @@ bind_interrupts!(struct USBIrqs {
 
 bind_interrupts!(struct UsartIrqs {
     USART2 => embassy_stm32::usart::InterruptHandler<peripherals::USART2>;
+    DMA1_CHANNEL6 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH6>;
+    DMA1_CHANNEL7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH7>;
 });
 
 // static UART: StaticCell<Uart<'static, Async>> = StaticCell::new();
@@ -86,7 +88,7 @@ async fn main(spawner: Spawner) {
     // let usb_usages = usb.buffer_usage();
     // defmt::info!("{}us: {:?}", to_usb.as_micros() as u16, usb_usages);
     defmt::info!("USB Setup: {}us", to_usb.as_micros() as u16);
-    spawner.spawn(run_usb(usb)).unwrap();
+    spawner.spawn(run_usb(usb).unwrap());
     yield_now().await;
 
     // embassy_stm32::pac::GPIOB.bsrr().write(|w| w.set_bs(0, true));
@@ -118,8 +120,8 @@ async fn main(spawner: Spawner) {
     let uart = Uart::new(
         p.USART2,
         p.PA3, p.PA2,  // RX, TX
-        UsartIrqs,
         p.DMA1_CH7, p.DMA1_CH6, // TX, RX
+        UsartIrqs,
         cobs_config()
     ).unwrap();
     let (uart_tx, uart_rx) = uart.split();
@@ -144,10 +146,10 @@ async fn main(spawner: Spawner) {
 
     rb_ctrl.n_rst.set_high();
 
-    spawner.spawn(logger::run(defmt_out)).unwrap();
-    spawner.spawn(usb_com::run(acm0_in, uart_tx, rb_ctrl, keymap)).unwrap();
-    spawner.spawn(serial::run(uart_tx, uart_rx, acm1, main_state)).unwrap();
-    spawner.spawn(keyscan::run(keys, keymap, main_state, uart_tx)).unwrap();
+    spawner.spawn(logger::run(defmt_out).unwrap());
+    spawner.spawn(usb_com::run(acm0_in, uart_tx, rb_ctrl, keymap).unwrap());
+    spawner.spawn(serial::run(uart_tx, uart_rx, acm1, main_state).unwrap());
+    spawner.spawn(keyscan::run(keys, keymap, main_state, uart_tx).unwrap());
 
     let blink_fut = async {
         loop {

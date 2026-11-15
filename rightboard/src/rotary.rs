@@ -1,5 +1,5 @@
 use embassy_futures::select::select;
-use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::{exti::ExtiInput, mode::Async};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{with_deadline, Duration, Instant};
 use rotary_encoder_hal::{DefaultPhase, Direction, Rotary};
@@ -15,10 +15,10 @@ pub struct EncoderState {
     pub interrupts: u32,
 }
 
-type Encoder = Rotary<ExtiInput<'static>, ExtiInput<'static>, DefaultPhase>;
+type Encoder = Rotary<ExtiInput<'static, Async>, ExtiInput<'static, Async>, DefaultPhase>;
 
 #[embassy_executor::task]
-pub async fn encoder_monitor(pin_a: ExtiInput<'static>, pin_b: ExtiInput<'static>, uart_tx: &'static UartTxMutex, keymap: &'static KeymapMutex) {
+pub async fn encoder_monitor(pin_a: ExtiInput<'static, Async>, pin_b: ExtiInput<'static, Async>, uart_tx: &'static UartTxMutex, keymap: &'static KeymapMutex) {
     let mut enc: Encoder = Rotary::new(pin_a, pin_b);
     let (cw, ccw) = keymap.lock(|map| {
         let cw = map.keymap.cw.encode_update(false).unwrap_or(0x6F);

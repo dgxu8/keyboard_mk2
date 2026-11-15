@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(if_let_guard)]
 
 extern crate panic_halt;
 
@@ -14,7 +13,7 @@ pub mod state_machine;
 use core::sync::atomic::Ordering;
 
 use embassy_futures::select::{select, Either};
-use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::exti::{self, ExtiInput};
 use embassy_stm32::flash::Flash;
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::time::Hertz;
@@ -27,7 +26,7 @@ use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllSource, Sysclk};
 use embassy_stm32::usart::{RingBufferedUartRx, Uart};
-use embassy_stm32::{bind_interrupts, peripherals, i2c, usart, Config};
+use embassy_stm32::{bind_interrupts, peripherals, i2c, interrupt, usart, dma, Config};
 use embedded_io_async::Write;
 use ssd1306::mode::DisplayConfigAsync;
 use ssd1306::prelude::DisplayRotation;
@@ -44,12 +43,17 @@ use crate::state_machine::{ALT_HOLD, Layer, REPORT_FULL, StateMachine};
 use crate::keymap::{KEYMAP, Keymap, KeymapMutex};
 use crate::display::{display_draw, Draw, DISPLAY_DRAW, OLED_STR};
 
-bind_interrupts!(struct UsartIrqs {
+// TODO: maybe combine these into a single irq struct
+bind_interrupts!(struct Irqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
+    I2C2 => i2c::EventInterruptHandler<peripherals::I2C2>,
+            i2c::ErrorInterruptHandler<peripherals::I2C2>;
+    DMA1_CHANNEL4_5_6_7 => dma::InterruptHandler<peripherals::DMA1_CH4>, dma::InterruptHandler<peripherals::DMA1_CH5>,
+                           dma::InterruptHandler<peripherals::DMA1_CH6>, dma::InterruptHandler<peripherals::DMA1_CH7>;
 });
 
-bind_interrupts!(struct I2CIrqs {
-    I2C2 => i2c::EventInterruptHandler<peripherals::I2C2>, i2c::ErrorInterruptHandler<peripherals::I2C2>;
+bind_interrupts!(struct GPIOIrqs {
+    EXTI4_15 => exti::InterruptHandler<interrupt::typelevel::EXTI4_15>;
 });
 
 #[embassy_executor::main]
@@ -105,8 +109,8 @@ async fn main(spawner: Spawner) -> ! {
     let uart = Uart::new(
         p.USART2,
         p.PA3, p.PA2,  // RX, TX
-        UsartIrqs,
         p.DMA1_CH7, p.DMA1_CH6,  // TX, RX
+        Irqs,
         cobs_config(),
     ).unwrap();
     let (uart_tx, uart_rx) = uart.split();
@@ -118,8 +122,8 @@ async fn main(spawner: Spawner) -> ! {
     let uart_tx = UART_TX.init(Mutex::new(uart_tx));
 
     // Rotary Encoder
-    let rot_pin_a = ExtiInput::new(p.PB14, p.EXTI14, Pull::None);
-    let rot_pin_b = ExtiInput::new(p.PB13, p.EXTI13, Pull::None);
+    let rot_pin_a = ExtiInput::new(p.PB14, p.EXTI14, Pull::None, GPIOIrqs);
+    let rot_pin_b = ExtiInput::new(p.PB13, p.EXTI13, Pull::None, GPIOIrqs);
 
     let flash = Flash::new_blocking(p.FLASH);
     let keymap = Keymap::new(flash, 0);
@@ -137,7 +141,13 @@ async fn main(spawner: Spawner) -> ! {
     // The datasheet says that the max frequency is 1MHz but 8MHz seems to work
     let mut i2c_cfg = i2c::Config::default();
     i2c_cfg.frequency = Hertz::mhz(8);
-    let i2c = I2c::new(p.I2C2, p.PB10, p.PB11, I2CIrqs, p.DMA1_CH4, p.DMA1_CH5, i2c_cfg);
+    let i2c = I2c::new(
+        p.I2C2,
+        p.PB10, p.PB11,
+        p.DMA1_CH4, p.DMA1_CH5,
+        Irqs,
+        i2c_cfg
+    );
     let i2c_intf = I2CDisplayInterface::new(i2c);
     let mut display = Ssd1306Async::new(i2c_intf, DisplaySize128x32, DisplayRotation::Rotate0).into_buffered_graphics_mode();
     display.init().await.unwrap();
@@ -152,10 +162,10 @@ async fn main(spawner: Spawner) -> ! {
         oled.send(Draw::Numlock(true)).await;
     }
 
-    spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a, uart_tx, keymap)).unwrap();
-    spawner.spawn(display_draw(display)).unwrap();
-    spawner.spawn(keyscan::run(keys, uart_tx, keymap, state_machine)).unwrap();
-    spawner.spawn(run_logger(uart_tx)).unwrap();
+    spawner.spawn(encoder_monitor(rot_pin_b, rot_pin_a, uart_tx, keymap).unwrap());
+    spawner.spawn(display_draw(display).unwrap());
+    spawner.spawn(keyscan::run(keys, uart_tx, keymap, state_machine).unwrap());
+    spawner.spawn(run_logger(uart_tx).unwrap());
 
 
     led1.set_low();
