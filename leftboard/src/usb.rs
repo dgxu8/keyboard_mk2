@@ -2,41 +2,8 @@ use core::{cmp, sync::atomic::{AtomicBool, Ordering}};
 
 use embassy_stm32::{peripherals::USB, usb::Driver};
 use embassy_sync::{blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex}, signal::Signal};
-use embassy_usb::{class::{cdc_acm::{self, CdcAcmClass, Receiver, Sender}, hid::{self, HidReaderWriter, ReportId, RequestHandler}}, control::OutResponse, driver::{self, EndpointError}, Builder, Handler, UsbDevice};
+use embassy_usb::{Builder, Handler, UsbDevice, class::{cdc_acm::{self, CdcAcmClass, Receiver, Sender}, hid::{self, HidBootProtocol, HidReaderWriter, HidSubclass, ReportId, RequestHandler}}, control::OutResponse, driver::{self, EndpointError}};
 use static_cell::StaticCell;
-use usbd_hid::{descriptor::*};
-use serde::ser::{Serialize, Serializer, SerializeTuple};
-
-#[gen_hid_descriptor(
-    (collection = APPLICATION, usage_page = GENERIC_DESKTOP, usage = KEYBOARD) = {
-        (usage_page = KEYBOARD, usage_min = 0xE0, usage_max = 0xE7) = {
-            #[packed_bits 8]
-            #[item_settings data,variable,absolute]
-            modifier=input;
-        };
-        (usage_min = 0x00, usage_max = 0xFF) = {
-            #[item_settings constant,variable,absolute]
-            reserved=input;
-        };
-        (usage_page = LEDS, usage_min = 0x01, usage_max = 0x05) = {
-            #[packed_bits 5]
-            #[item_settings data,variable,absolute]
-            leds=output;
-        };
-        (usage_page = KEYBOARD, usage_min = 0x00, usage_max = 0x65) = {
-            #[packed_bits 101]
-            #[item_settings data,variable,absolute]
-            keycodes=input;
-        };
-    }
-)]
-
-pub struct NKROKeyboardReport {
-    pub modifier: u8,
-    pub reserved: u8,
-    pub leds: u8,
-    pub keycodes: [u8; 13],
-}
 
 pub static CAPS_LOCK: Signal<CriticalSectionRawMutex, u8> = Signal::new();
 pub static USB_READY: Signal<ThreadModeRawMutex, bool> = Signal::new();
@@ -54,6 +21,69 @@ pub type UsbTx<'a> = Sender<'a, Driver<'a, USB>>;
 pub type UsbRx<'a> = Receiver<'a, Driver<'a, USB>>;
 pub type CdcDev = CdcAcmClass<'static, Driver<'static, USB>>;
 type HidRW = HidReaderWriter<'static, Driver<'static, USB>, 1, 15>;
+
+#[repr(C, packed)]
+pub struct NKROReport {
+    modifier: u8,
+    reserved: u8,  // Required padding
+    keycodes: [u8; 13],
+}
+
+impl NKROReport {
+    const DESCRIPTOR: &'static[u8] = &[
+        0x05, 0x01,         // USAGE_PAGE (Generic Desktop)
+        0x09, 0x06,         // USAGE (Keyboard)
+        0xa1, 0x01,         // COLLECTION (Application)
+        // Modifiers
+        0x05, 0x07,         //   USAGE_PAGE (Keyboard)
+        0x19, 0xe0,         //   USAGE_MINIMUM (Keyboard LeftControl)
+        0x29, 0xe7,         //   USAGE_MAXIMUM (Keyboard Right GUI)
+        0x15, 0x00,         //   LOGICAL_MINIMUM (0)
+        0x25, 0x01,         //   LOGICAL_MAXIMUM (1)
+        0x75, 0x01,         //   REPORT_SIZE (1)
+        0x95, 0x08,         //   REPORT_COUNT (8)
+        0x81, 0x02,         //   INPUT (Data,Var,Abs)
+        // Reserved Byte
+        0x75, 0x08,         //   REPORT_SIZE (8)
+        0x95, 0x01,         //   REPORT_COUNT (1)
+        0x81, 0x01,         //   INPUT (Cnst,Ary,Abs)
+        // LED Output Report
+        0x05, 0x08,         //   USAGE_PAGE (LEDs)
+        0x19, 0x01,         //   USAGE_MINIMUM (Num Lock)
+        0x29, 0x05,         //   USAGE_MAXIMUM (Kana)
+        0x75, 0x01,         //   REPORT_SIZE (1)
+        0x95, 0x05,         //   REPORT_COUNT (5)
+        0x91, 0x02,         //   OUTPUT (Data,Var,Abs)
+        0x75, 0x03,         //   REPORT_SIZE (3)
+        0x95, 0x01,         //   REPORT_COUNT (1)
+        0x91, 0x01,         //   OUTPUT (Cnst,Ary,Abs)
+        // Keys bitmap
+        0x05, 0x07,         //   USAGE_PAGE (Keyboard)
+        0x19, 0x00,         //   USAGE_MINIMUM (Reserved (no event indicated))
+        0x29, 0x65,         //   USAGE_MAXIMUM (Keyboard Application)
+        0x15, 0x00,         //   LOGICAL_MINIMUM (0)
+        0x25, 0x01,         //   LOGICAL_MAXIMUM (1)
+        0x75, 0x01,         //   REPORT_SIZE (1)
+        0x95, 0x65,         //   REPORT_COUNT (101) maybe needs to be 102
+        0x81, 0x02,         //   INPUT (Data,Var,Abs)
+        0x75, 0x03,         //   REPORT_SIZE (3)
+        0x95, 0x01,         //   REPORT_COUNT (1)
+        0x81, 0x01,         //   INPUT (Cnst,Ary,Abs)
+        0xc0                // END_COLLECTION
+    ];
+
+    pub fn new(modifier: u8, keycodes: [u8; 13]) -> Self {
+        Self {
+            modifier,
+            keycodes,
+            reserved: 0,
+        }
+    }
+
+    pub fn into_bytes(self) -> [u8; 15] {
+        unsafe { core::mem::transmute(self) }
+    }
+}
 
 #[embassy_executor::task]
 pub async fn run_usb(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
@@ -95,7 +125,7 @@ pub fn init_usb(driver: Driver<'static, USB>) -> (UsbDevice<'static, Driver<'sta
     builder.handler(device_handler);
 
     let hid_cfg = embassy_usb::class::hid::Config {
-        report_descriptor: NKROKeyboardReport::desc(),
+        report_descriptor: NKROReport::DESCRIPTOR,
         request_handler: None,
         poll_ms: 1,
         max_packet_size: 15,

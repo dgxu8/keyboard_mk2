@@ -34,7 +34,7 @@ use util::keycom::FullState;
 
 use crate::keyscan::{Keymap, Keyscan, KEYMAP};
 use crate::serial::RB_NOTIFY;
-use crate::usb::{CAPS_LOCK, HidRqstHndlr, NKROKeyboardReport, init_usb, run_usb, wait_for_usb};
+use crate::usb::{CAPS_LOCK, HidRqstHndlr, NKROReport, init_usb, run_usb, wait_for_usb};
 use crate::usb_com::CoprocCtrl;
 
 bind_interrupts!(struct USBIrqs {
@@ -156,14 +156,12 @@ async fn main(spawner: Spawner) {
             KEY_CHANGE.wait().await;
             status_led.toggle();
             let report = main_state.lock(|main| {
-                NKROKeyboardReport {
-                    keycodes: main.key[..13].try_into().unwrap(),
-                    leds: 0,
-                    modifier: main.modifier,
-                    reserved: 0,
-                }
+                NKROReport::new(
+                    main.modifier,
+                    main.key[..13].try_into().unwrap(),
+                )
             });
-            match writer.write_serialize(&report).await {
+            match writer.write(&report.into_bytes()).await {
                 Ok(()) => {},
                 Err(e) => defmt::warn!("Error sending key {:?}", e as u8),
             };
